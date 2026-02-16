@@ -7,7 +7,7 @@ from datetime import datetime
 from tkinter import messagebox, scrolledtext, ttk
 
 from .config import AppConfig
-from .main import run_once, run_service
+from .main import run_dry, run_once, run_service
 
 
 class BandAutoPosterGUI:
@@ -54,6 +54,9 @@ class BandAutoPosterGUI:
         button_row = ttk.Frame(frame)
         button_row.pack(fill="x", pady=(0, 10))
 
+        self.dry_run_btn = ttk.Button(button_row, text="설정 점검", command=self.handle_dry_run)
+        self.dry_run_btn.pack(side="left", padx=(0, 8))
+
         self.run_once_btn = ttk.Button(button_row, text="한 번 실행", command=self.handle_run_once)
         self.run_once_btn.pack(side="left", padx=(0, 8))
 
@@ -68,6 +71,21 @@ class BandAutoPosterGUI:
 
         self.log_view = scrolledtext.ScrolledText(frame, wrap="word", height=16, state="disabled")
         self.log_view.pack(fill="both", expand=True)
+
+    def handle_dry_run(self) -> None:
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showinfo("안내", "이미 실행 중입니다.")
+            return
+
+        self._set_status("설정 점검 실행 중...")
+        self.worker_thread = threading.Thread(target=self._dry_run_worker, daemon=True)
+        self.worker_thread.start()
+
+    def _dry_run_worker(self) -> None:
+        try:
+            run_dry(self.cfg, status_callback=self._enqueue_log)
+        except Exception as exc:
+            self._enqueue_log(f"오류: {exc}")
 
     def handle_run_once(self) -> None:
         if self.worker_thread and self.worker_thread.is_alive():

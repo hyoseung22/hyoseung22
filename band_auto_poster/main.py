@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 import time
+from datetime import datetime
 from threading import Event
 from typing import Callable
 
@@ -58,6 +59,28 @@ def run_once(cfg: AppConfig, status_callback: StatusCallback | None = None) -> N
         browser.close()
 
 
+def run_dry(cfg: AppConfig, status_callback: StatusCallback | None = None) -> list[str]:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    is_active = within_active_window(cfg.schedule)
+
+    report = [
+        "[DRY-RUN] NaverBand 자동 게시 설정 점검",
+        f"- 현재 시각: {now}",
+        f"- 대상 밴드: {cfg.band.target_url}",
+        f"- 주기: {cfg.schedule.interval_minutes}분",
+        f"- 활성 시간: {cfg.schedule.active_time.start} ~ {cfg.schedule.active_time.end} ({cfg.schedule.timezone})",
+        f"- 활성 시간 여부: {'활성' if is_active else '비활성'}",
+        f"- 스타일: bold={cfg.band.style.bold}, size={cfg.band.style.font_size}, color={cfg.band.style.font_color}",
+        "- 결과: 실제 로그인/게시 없이 설정과 실행 경로만 점검했습니다.",
+    ]
+
+    for line in report:
+        logger.info(line)
+        _notify(status_callback, line)
+
+    return report
+
+
 def run_service(
     cfg: AppConfig,
     stop_event: Event | None = None,
@@ -107,6 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
     parser.add_argument("--gui", action="store_true", help="Run desktop GUI")
+    parser.add_argument("--dry-run", action="store_true", help="Validate settings without real login/post")
     return parser.parse_args()
 
 
@@ -120,6 +144,10 @@ def main() -> int:
         from .gui import launch_gui
 
         launch_gui(cfg)
+        return 0
+
+    if args.dry_run:
+        run_dry(cfg)
         return 0
 
     stop_event = Event()

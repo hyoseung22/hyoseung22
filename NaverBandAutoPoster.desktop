@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=NaverBand Auto Poster
+Comment=Run NaverBand auto poster GUI
+Exec=sh -c 'cd /workspace/hyoseung22 && ./launch_app.sh'
+Terminal=false
+Categories=Utility;

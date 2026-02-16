@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import platform
+import subprocess
+import sys
 import traceback
 from pathlib import Path
+from typing import Callable
+
+
+REQUIRED_MODULES = ("yaml", "apscheduler", "playwright")
 
 
 def _wait_if_needed() -> None:
@@ -24,10 +32,35 @@ def _write_error_log(message: str) -> Path:
     return path
 
 
+def _missing_modules() -> list[str]:
+    return [name for name in REQUIRED_MODULES if importlib.util.find_spec(name) is None]
+
+
+def _install_requirements() -> None:
+    req = Path("requirements.txt")
+    if not req.exists():
+        raise FileNotFoundError("requirements.txt 파일을 찾을 수 없습니다.")
+
+    print("[INFO] 필요한 패키지가 없어 자동 설치를 시도합니다...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req)], check=True)
+
+
+def _load_gui_launcher() -> Callable[[str], None]:
+    module = importlib.import_module("band_auto_poster.gui")
+    launcher = getattr(module, "launch_gui", None)
+    if launcher is None:
+        raise RuntimeError("band_auto_poster.gui.launch_gui 를 찾을 수 없습니다.")
+    return launcher
+
+
 def main() -> int:
     try:
-        from band_auto_poster.gui import launch_gui
+        missing = _missing_modules()
+        if missing:
+            print(f"[WARN] 누락된 패키지 감지: {', '.join(missing)}")
+            _install_requirements()
 
+        launch_gui = _load_gui_launcher()
         launch_gui("config.yaml")
         return 0
     except Exception:

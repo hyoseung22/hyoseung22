@@ -22,6 +22,14 @@
 python run_gui_app.py
 ```
 
+### 점검 스크립트 실행
+
+```bash
+./demo_run.sh
+```
+
+실행 결과는 `logs/demo_run_output.txt`에 저장됩니다.
+
 실행 시 `config.yaml`이 없으면 `config.example.yaml`을 복사해 자동 생성합니다.
 
 ## GUI에서 하는 작업

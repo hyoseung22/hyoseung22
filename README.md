@@ -41,6 +41,12 @@ cp config.example.yaml config.yaml
 python -m band_auto_poster.main --config config.yaml
 ```
 
+GUI 실행(초심자용):
+
+```bash
+python -m band_auto_poster.main --config config.yaml --gui
+```
+
 ## 백그라운드 실행 (Linux systemd 예시)
 
 `/etc/systemd/system/naver-band-poster.service`

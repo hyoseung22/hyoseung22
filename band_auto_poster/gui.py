@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -23,6 +24,9 @@ from .config import (
     save_config,
 )
 from .main import run_dry, run_once, run_service
+
+
+SERVICE_STOPPED = "__SERVICE_STOPPED__"
 
 
 class BandAutoPosterGUI:
@@ -56,7 +60,6 @@ class BandAutoPosterGUI:
         form.pack(fill="x", pady=(0, 10))
 
         self.band_url_var = tk.StringVar()
-        self.post_text_var = tk.StringVar()
         self.interval_var = tk.StringVar()
         self.start_var = tk.StringVar()
         self.end_var = tk.StringVar()
@@ -116,6 +119,11 @@ class BandAutoPosterGUI:
             if example.exists():
                 path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
 
+        if not path.exists():
+            self._enqueue_log("config.yaml과 config.example.yaml이 없어 기본값으로 시작합니다.")
+            self._set_defaults()
+            return
+
         cfg = load_config(path)
         self.band_url_var.set(cfg.band.target_url)
         self.interval_var.set(str(cfg.schedule.interval_minutes))
@@ -134,12 +142,45 @@ class BandAutoPosterGUI:
         self.naver_pw_var.set(os.getenv(cfg.naver.password_env, ""))
         self._enqueue_log(f"설정 파일 로드 완료: {self.config_path}")
 
-    def _build_config_from_form(self) -> AppConfig:
-        post_text = self.post_text_widget.get("1.0", "end").strip()
-        if not post_text:
+    def _set_defaults(self) -> None:
+        self.band_url_var.set("https://band.us/band/your-band-id")
+        self.interval_var.set("5")
+        self.start_var.set("07:00")
+        self.end_var.set("19:00")
+        self.timezone_var.set("Asia/Seoul")
+        self.bold_var.set(True)
+        self.font_size_var.set("16")
+        self.font_color_var.set("#1F6FEB")
+        self.max_attempts_var.set("3")
+        self.backoff_var.set("8")
+        self.post_text_widget.delete("1.0", "end")
+        self.post_text_widget.insert("1.0", "정기 공지입니다.")
+
+    def _validate_inputs(self) -> None:
+        if not self.band_url_var.get().strip():
+            raise ConfigError("밴드 URL을 입력하세요.")
+        if not self.post_text_widget.get("1.0", "end").strip():
             raise ConfigError("게시 내용을 입력하세요.")
 
-        cfg = AppConfig(
+        for field_name, value in {
+            "시작 시간": self.start_var.get().strip(),
+            "종료 시간": self.end_var.get().strip(),
+        }.items():
+            if not re.fullmatch(r"\d{2}:\d{2}", value):
+                raise ConfigError(f"{field_name} 형식은 HH:MM 이어야 합니다.")
+
+        color = self.font_color_var.get().strip()
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise ConfigError("폰트 색상은 #RRGGBB 형식이어야 합니다.")
+
+        if int(self.interval_var.get().strip()) < 1:
+            raise ConfigError("게시 주기는 1분 이상이어야 합니다.")
+
+    def _build_config_from_form(self) -> AppConfig:
+        self._validate_inputs()
+        post_text = self.post_text_widget.get("1.0", "end").strip()
+
+        return AppConfig(
             naver=NaverConfig(
                 username_env="NAVER_ID",
                 password_env="NAVER_PW",
@@ -169,9 +210,6 @@ class BandAutoPosterGUI:
             ),
             logging=LoggingConfig(level="INFO", file="./logs/app.log"),
         )
-        if not cfg.band.target_url:
-            raise ConfigError("밴드 URL을 입력하세요.")
-        return cfg
 
     def _apply_credentials_env(self, cfg: AppConfig) -> None:
         os.environ[cfg.naver.username_env] = self.naver_id_var.get().strip()
@@ -225,8 +263,7 @@ class BandAutoPosterGUI:
             except Exception as exc:
                 self._enqueue_log(f"오류: {exc}")
             finally:
-                self.start_btn.configure(state="normal")
-                self.stop_btn.configure(state="disabled")
+                self.log_queue.put(SERVICE_STOPPED)
 
         if self.worker_thread and self.worker_thread.is_alive():
             messagebox.showinfo("안내", "이미 자동 실행 중입니다.")
@@ -246,9 +283,14 @@ class BandAutoPosterGUI:
 
     def _poll_logs(self) -> None:
         while not self.log_queue.empty():
-            log = self.log_queue.get()
-            self._append_log(log)
-            self._set_status(log)
+            item = self.log_queue.get()
+            if item == SERVICE_STOPPED:
+                self.start_btn.configure(state="normal")
+                self.stop_btn.configure(state="disabled")
+                continue
+
+            self._append_log(item)
+            self._set_status(item)
         self.root.after(300, self._poll_logs)
 
     def _append_log(self, text: str) -> None:

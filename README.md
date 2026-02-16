@@ -22,6 +22,13 @@
 python run_gui_app.py
 ```
 
+### Windows
+
+- `RUN_GUI.bat` 더블클릭 실행
+- 또는 `python run_gui_app.py` 실행
+
+`run_gui_app` 실행 직후 창이 닫히면 `logs/run_gui_error.log`를 확인하세요.
+
 ### 점검 스크립트 실행
 
 ```bash

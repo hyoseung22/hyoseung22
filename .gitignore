@@ -5,3 +5,5 @@ logs/*.log
 logs/*.png
 data/session.json
 config.yaml
+
+logs/*.txt

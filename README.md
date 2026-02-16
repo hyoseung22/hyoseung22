@@ -1,85 +1,51 @@
 # NaverBand Auto Poster
 
-네이버 밴드에 주기적으로 텍스트 게시물을 등록하는 자동화 프로그램입니다.
+네이버 밴드 자동 게시 프로그램입니다.
 
-## 기능
+## 요청 반영 사항
 
-- 네이버 로그인 자동화 (세션 저장/재사용)
-- 게시 주기 + 운영 시간대 설정 (`예: 5분마다, 07:00~19:00`)
-- 텍스트 스타일 적용(굵기/크기/색상)
-- 백그라운드 실행용 엔트리포인트
-- 실패 시 재시도 및 스크린샷/로그 저장
+- 변수 설정(주기, 시간, 텍스트, 스타일, 계정 입력)
+- 시작 / 중지 / 1회 실행 / 점검 실행
 
-> ⚠️ 본 프로젝트는 학습/사내 자동화 예시입니다. 서비스 약관과 정책을 반드시 준수하세요.
+위 모든 작업을 **GUI 화면에서** 처리하도록 변경했습니다.
 
-## 빠른 시작
+## 실행 방법 (응용프로그램 방식)
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-```
+### Linux
 
-환경 변수 설정:
+- `launch_app.sh` 실행
+- 또는 `NaverBandAutoPoster.desktop` 더블클릭 실행
+
+### 공통 파이썬 실행
 
 ```bash
-export NAVER_ID="your_id"
-export NAVER_PW="your_password"
+python run_gui_app.py
 ```
 
-설정 파일 수정:
+실행 시 `config.yaml`이 없으면 `config.example.yaml`을 복사해 자동 생성합니다.
 
-```bash
-cp config.example.yaml config.yaml
-# 원하는 주기, 시간, 밴드 URL, 텍스트 수정
-```
+## GUI에서 하는 작업
 
-실행:
+- 밴드 URL
+- 게시 내용
+- 게시 주기 / 시작 시간 / 종료 시간 / 타임존
+- 폰트(굵기/크기/색상)
+- 재시도 횟수 / 재시도 간격
+- 네이버 ID / PW
 
-```bash
-python -m band_auto_poster.main --config config.yaml
-```
+입력 후 `설정 저장` → `자동 시작` 순서로 사용하면 됩니다.
 
-GUI 실행(초심자용):
+## 파일 위치
 
-```bash
-python -m band_auto_poster.main --config config.yaml --gui
-```
+- GUI 메인: `band_auto_poster/gui.py`
+- 앱 런처(Python): `run_gui_app.py`
+- 앱 런처(Shell): `launch_app.sh`
+- Desktop 파일: `NaverBandAutoPoster.desktop`
+- 실행 엔진: `band_auto_poster/main.py`
+- 설정 로더/저장: `band_auto_poster/config.py`
+- 설정 샘플: `config.example.yaml`
 
-CLI 점검 실행(실제 로그인/게시 없이 설정 확인):
+## 참고
 
-```bash
-python -m band_auto_poster.main --config config.yaml --dry-run
-```
-
-## 백그라운드 실행 (Linux systemd 예시)
-
-`/etc/systemd/system/naver-band-poster.service`
-
-```ini
-[Unit]
-Description=NaverBand Auto Poster
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/naver-band-poster
-Environment=NAVER_ID=your_id
-Environment=NAVER_PW=your_pw
-ExecStart=/opt/naver-band-poster/.venv/bin/python -m band_auto_poster.main --config /opt/naver-band-poster/config.yaml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## 구조
-
-- `band_auto_poster/config.py`: 설정 모델 및 로더
-- `band_auto_poster/logger.py`: 로깅 설정
-- `band_auto_poster/auth.py`: 로그인/세션 관리
-- `band_auto_poster/poster.py`: 글쓰기/스타일/게시 로직
-- `band_auto_poster/scheduler.py`: 시간대/주기 스케줄링
-- `band_auto_poster/main.py`: 엔트리포인트
+- 서비스 정책/약관을 준수해 주세요.
+- 사이트 DOM 변경 시 셀렉터 수정이 필요할 수 있습니다.

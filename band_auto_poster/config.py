@@ -121,3 +121,45 @@ def load_config(path: str | Path) -> AppConfig:
             file=str(_require(logging_cfg, "file")),
         ),
     )
+
+
+def dump_config(config: AppConfig) -> dict[str, Any]:
+    return {
+        "naver": {
+            "username_env": config.naver.username_env,
+            "password_env": config.naver.password_env,
+            "use_saved_session": config.naver.use_saved_session,
+            "session_file": config.naver.session_file,
+        },
+        "band": {
+            "target_url": config.band.target_url,
+            "post_text": config.band.post_text,
+            "style": {
+                "bold": config.band.style.bold,
+                "font_size": config.band.style.font_size,
+                "font_color": config.band.style.font_color,
+            },
+        },
+        "schedule": {
+            "interval_minutes": config.schedule.interval_minutes,
+            "timezone": config.schedule.timezone,
+            "active_time": {
+                "start": config.schedule.active_time.start,
+                "end": config.schedule.active_time.end,
+            },
+        },
+        "retry": {
+            "max_attempts": config.retry.max_attempts,
+            "backoff_seconds": config.retry.backoff_seconds,
+        },
+        "logging": {
+            "level": config.logging.level,
+            "file": config.logging.file,
+        },
+    }
+
+
+def save_config(path: str | Path, config: AppConfig) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(yaml.safe_dump(dump_config(config), allow_unicode=True, sort_keys=False), encoding="utf-8")

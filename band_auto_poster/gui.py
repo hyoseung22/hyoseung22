@@ -1,27 +1,43 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
+from typing import Callable
 
-from .config import AppConfig
+from .config import (
+    ActiveTimeConfig,
+    AppConfig,
+    BandConfig,
+    ConfigError,
+    LoggingConfig,
+    NaverConfig,
+    RetryConfig,
+    ScheduleConfig,
+    StyleConfig,
+    load_config,
+    save_config,
+)
 from .main import run_dry, run_once, run_service
 
 
 class BandAutoPosterGUI:
-    def __init__(self, root: tk.Tk, cfg: AppConfig) -> None:
+    def __init__(self, root: tk.Tk, config_path: str = "config.yaml") -> None:
         self.root = root
-        self.cfg = cfg
+        self.config_path = config_path
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.log_queue: queue.Queue[str] = queue.Queue()
 
         self.root.title("NaverBand 자동 게시 도우미")
-        self.root.geometry("720x520")
+        self.root.geometry("880x680")
 
         self._build_layout()
+        self._load_into_form()
         self._poll_logs()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -29,101 +45,200 @@ class BandAutoPosterGUI:
         frame = ttk.Frame(self.root, padding=12)
         frame.pack(fill="both", expand=True)
 
-        title = ttk.Label(frame, text="네이버 밴드 자동 게시", font=("Arial", 16, "bold"))
-        title.pack(anchor="w", pady=(0, 8))
-
-        desc = ttk.Label(
+        ttk.Label(frame, text="네이버 밴드 자동 게시 (GUI 전용)", font=("Arial", 16, "bold")).pack(anchor="w")
+        ttk.Label(
             frame,
-            text=(
-                "초심자용 실행 화면입니다.\n"
-                "- [한 번 실행] : 지금 즉시 1회 게시\n"
-                "- [자동 시작] : 설정한 주기로 백그라운드 반복 게시\n"
-                "- [자동 중지] : 반복 게시 중지"
-            ),
-            justify="left",
-        )
-        desc.pack(anchor="w", pady=(0, 10))
+            text="설정/시작/중지 모두 이 화면에서 진행할 수 있습니다.",
+            foreground="#444",
+        ).pack(anchor="w", pady=(0, 8))
 
-        cfg_text = (
-            f"대상 밴드: {self.cfg.band.target_url}\n"
-            f"주기: {self.cfg.schedule.interval_minutes}분\n"
-            f"활성 시간: {self.cfg.schedule.active_time.start} ~ {self.cfg.schedule.active_time.end}"
-        )
-        ttk.Label(frame, text=cfg_text, foreground="#333333").pack(anchor="w", pady=(0, 8))
+        form = ttk.LabelFrame(frame, text="작업 설정", padding=10)
+        form.pack(fill="x", pady=(0, 10))
 
-        button_row = ttk.Frame(frame)
-        button_row.pack(fill="x", pady=(0, 10))
+        self.band_url_var = tk.StringVar()
+        self.post_text_var = tk.StringVar()
+        self.interval_var = tk.StringVar()
+        self.start_var = tk.StringVar()
+        self.end_var = tk.StringVar()
+        self.timezone_var = tk.StringVar()
+        self.bold_var = tk.BooleanVar(value=True)
+        self.font_size_var = tk.StringVar()
+        self.font_color_var = tk.StringVar()
+        self.max_attempts_var = tk.StringVar()
+        self.backoff_var = tk.StringVar()
+        self.naver_id_var = tk.StringVar()
+        self.naver_pw_var = tk.StringVar()
 
-        self.dry_run_btn = ttk.Button(button_row, text="설정 점검", command=self.handle_dry_run)
-        self.dry_run_btn.pack(side="left", padx=(0, 8))
+        self._add_entry(form, 0, "밴드 URL", self.band_url_var)
+        self._add_entry(form, 1, "게시 주기(분)", self.interval_var)
+        self._add_entry(form, 2, "시작 시간(HH:MM)", self.start_var)
+        self._add_entry(form, 3, "종료 시간(HH:MM)", self.end_var)
+        self._add_entry(form, 4, "타임존", self.timezone_var)
+        self._add_entry(form, 5, "폰트 크기", self.font_size_var)
+        self._add_entry(form, 6, "폰트 색상(#RRGGBB)", self.font_color_var)
+        self._add_entry(form, 7, "최대 재시도", self.max_attempts_var)
+        self._add_entry(form, 8, "재시도 간격(초)", self.backoff_var)
+        self._add_entry(form, 9, "네이버 ID", self.naver_id_var)
+        self._add_entry(form, 10, "네이버 PW", self.naver_pw_var, show="*")
 
-        self.run_once_btn = ttk.Button(button_row, text="한 번 실행", command=self.handle_run_once)
-        self.run_once_btn.pack(side="left", padx=(0, 8))
+        ttk.Checkbutton(form, text="굵게(Bold)", variable=self.bold_var).grid(row=11, column=0, sticky="w", pady=4)
 
-        self.start_btn = ttk.Button(button_row, text="자동 시작", command=self.handle_start_service)
+        ttk.Label(form, text="게시 내용").grid(row=12, column=0, sticky="nw", pady=4)
+        self.post_text_widget = scrolledtext.ScrolledText(form, height=6)
+        self.post_text_widget.grid(row=12, column=1, sticky="ew", pady=4)
+        form.columnconfigure(1, weight=1)
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill="x", pady=(0, 10))
+
+        ttk.Button(btn_row, text="설정 저장", command=self.handle_save).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="설정 점검", command=self.handle_dry_run).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="한 번 실행", command=self.handle_run_once).pack(side="left", padx=(0, 8))
+        self.start_btn = ttk.Button(btn_row, text="자동 시작", command=self.handle_start_service)
         self.start_btn.pack(side="left", padx=(0, 8))
-
-        self.stop_btn = ttk.Button(button_row, text="자동 중지", command=self.handle_stop_service, state="disabled")
+        self.stop_btn = ttk.Button(btn_row, text="자동 중지", command=self.handle_stop_service, state="disabled")
         self.stop_btn.pack(side="left")
 
-        self.status_var = tk.StringVar(value="대기 중")
+        self.status_var = tk.StringVar(value="상태: 대기 중")
         ttk.Label(frame, textvariable=self.status_var, font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 8))
 
-        self.log_view = scrolledtext.ScrolledText(frame, wrap="word", height=16, state="disabled")
+        self.log_view = scrolledtext.ScrolledText(frame, wrap="word", height=12, state="disabled")
         self.log_view.pack(fill="both", expand=True)
 
-    def handle_dry_run(self) -> None:
+    def _add_entry(self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar, show: str | None = None) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        ttk.Entry(parent, textvariable=var, show=show if show else "").grid(row=row, column=1, sticky="ew", pady=3)
+
+    def _load_into_form(self) -> None:
+        path = Path(self.config_path)
+        if not path.exists():
+            example = Path("config.example.yaml")
+            if example.exists():
+                path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+
+        cfg = load_config(path)
+        self.band_url_var.set(cfg.band.target_url)
+        self.interval_var.set(str(cfg.schedule.interval_minutes))
+        self.start_var.set(cfg.schedule.active_time.start)
+        self.end_var.set(cfg.schedule.active_time.end)
+        self.timezone_var.set(cfg.schedule.timezone)
+        self.bold_var.set(cfg.band.style.bold)
+        self.font_size_var.set(str(cfg.band.style.font_size))
+        self.font_color_var.set(cfg.band.style.font_color)
+        self.max_attempts_var.set(str(cfg.retry.max_attempts))
+        self.backoff_var.set(str(cfg.retry.backoff_seconds))
+        self.post_text_widget.delete("1.0", "end")
+        self.post_text_widget.insert("1.0", cfg.band.post_text)
+
+        self.naver_id_var.set(os.getenv(cfg.naver.username_env, ""))
+        self.naver_pw_var.set(os.getenv(cfg.naver.password_env, ""))
+        self._enqueue_log(f"설정 파일 로드 완료: {self.config_path}")
+
+    def _build_config_from_form(self) -> AppConfig:
+        post_text = self.post_text_widget.get("1.0", "end").strip()
+        if not post_text:
+            raise ConfigError("게시 내용을 입력하세요.")
+
+        cfg = AppConfig(
+            naver=NaverConfig(
+                username_env="NAVER_ID",
+                password_env="NAVER_PW",
+                use_saved_session=True,
+                session_file="./data/session.json",
+            ),
+            band=BandConfig(
+                target_url=self.band_url_var.get().strip(),
+                post_text=post_text,
+                style=StyleConfig(
+                    bold=self.bold_var.get(),
+                    font_size=int(self.font_size_var.get().strip()),
+                    font_color=self.font_color_var.get().strip(),
+                ),
+            ),
+            schedule=ScheduleConfig(
+                interval_minutes=int(self.interval_var.get().strip()),
+                timezone=self.timezone_var.get().strip(),
+                active_time=ActiveTimeConfig(
+                    start=self.start_var.get().strip(),
+                    end=self.end_var.get().strip(),
+                ),
+            ),
+            retry=RetryConfig(
+                max_attempts=int(self.max_attempts_var.get().strip()),
+                backoff_seconds=int(self.backoff_var.get().strip()),
+            ),
+            logging=LoggingConfig(level="INFO", file="./logs/app.log"),
+        )
+        if not cfg.band.target_url:
+            raise ConfigError("밴드 URL을 입력하세요.")
+        return cfg
+
+    def _apply_credentials_env(self, cfg: AppConfig) -> None:
+        os.environ[cfg.naver.username_env] = self.naver_id_var.get().strip()
+        os.environ[cfg.naver.password_env] = self.naver_pw_var.get().strip()
+
+    def handle_save(self) -> None:
+        try:
+            cfg = self._build_config_from_form()
+            save_config(self.config_path, cfg)
+            self._enqueue_log(f"설정 저장 완료: {self.config_path}")
+        except Exception as exc:
+            messagebox.showerror("설정 오류", str(exc))
+
+    def _run_thread(self, target: Callable[[], None], running_text: str) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
             messagebox.showinfo("안내", "이미 실행 중입니다.")
             return
-
-        self._set_status("설정 점검 실행 중...")
-        self.worker_thread = threading.Thread(target=self._dry_run_worker, daemon=True)
+        self._set_status(running_text)
+        self.worker_thread = threading.Thread(target=target, daemon=True)
         self.worker_thread.start()
 
-    def _dry_run_worker(self) -> None:
-        try:
-            run_dry(self.cfg, status_callback=self._enqueue_log)
-        except Exception as exc:
-            self._enqueue_log(f"오류: {exc}")
+    def handle_dry_run(self) -> None:
+        def _work() -> None:
+            try:
+                cfg = self._build_config_from_form()
+                self._apply_credentials_env(cfg)
+                run_dry(cfg, status_callback=self._enqueue_log)
+            except Exception as exc:
+                self._enqueue_log(f"오류: {exc}")
+
+        self._run_thread(_work, "설정 점검 실행 중...")
 
     def handle_run_once(self) -> None:
-        if self.worker_thread and self.worker_thread.is_alive():
-            messagebox.showinfo("안내", "이미 실행 중입니다.")
-            return
+        def _work() -> None:
+            try:
+                cfg = self._build_config_from_form()
+                self._apply_credentials_env(cfg)
+                run_once(cfg, status_callback=self._enqueue_log)
+            except Exception as exc:
+                self._enqueue_log(f"오류: {exc}")
 
-        self._set_status("1회 실행 중...")
-        self.worker_thread = threading.Thread(target=self._run_once_worker, daemon=True)
-        self.worker_thread.start()
-
-    def _run_once_worker(self) -> None:
-        try:
-            run_once(self.cfg, status_callback=self._enqueue_log)
-        except Exception as exc:
-            self._enqueue_log(f"오류: {exc}")
+        self._run_thread(_work, "1회 실행 중...")
 
     def handle_start_service(self) -> None:
+        def _work() -> None:
+            try:
+                cfg = self._build_config_from_form()
+                self._apply_credentials_env(cfg)
+                self.stop_event.clear()
+                run_service(cfg, stop_event=self.stop_event, status_callback=self._enqueue_log)
+            except Exception as exc:
+                self._enqueue_log(f"오류: {exc}")
+            finally:
+                self.start_btn.configure(state="normal")
+                self.stop_btn.configure(state="disabled")
+
         if self.worker_thread and self.worker_thread.is_alive():
             messagebox.showinfo("안내", "이미 자동 실행 중입니다.")
             return
 
-        self.stop_event.clear()
-        self.worker_thread = threading.Thread(target=self._service_worker, daemon=True)
-        self.worker_thread.start()
-
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._set_status("자동 실행 중")
-
-    def _service_worker(self) -> None:
-        run_service(self.cfg, stop_event=self.stop_event, status_callback=self._enqueue_log)
+        self._run_thread(_work, "자동 실행 중")
 
     def handle_stop_service(self) -> None:
-        if self.worker_thread and self.worker_thread.is_alive():
-            self.stop_event.set()
-            self._set_status("중지 요청됨")
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self.stop_event.set()
+        self._set_status("중지 요청됨")
 
     def _enqueue_log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -150,7 +265,7 @@ class BandAutoPosterGUI:
         self.root.destroy()
 
 
-def launch_gui(cfg: AppConfig) -> None:
+def launch_gui(config_path: str = "config.yaml") -> None:
     root = tk.Tk()
-    BandAutoPosterGUI(root, cfg)
+    BandAutoPosterGUI(root, config_path=config_path)
     root.mainloop()

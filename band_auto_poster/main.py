@@ -127,7 +127,7 @@ def _notify(status_callback: StatusCallback | None, message: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="NaverBand auto poster")
-    parser.add_argument("--config", required=True, help="Path to YAML config")
+    parser.add_argument("--config", default="config.yaml", help="Path to YAML config")
     parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
     parser.add_argument("--gui", action="store_true", help="Run desktop GUI")
     parser.add_argument("--dry-run", action="store_true", help="Validate settings without real login/post")
@@ -136,15 +136,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    cfg = load_config(args.config)
-
-    setup_logging(cfg.logging.level, cfg.logging.file)
 
     if args.gui:
         from .gui import launch_gui
 
-        launch_gui(cfg)
+        setup_logging("INFO", "./logs/app.log")
+        launch_gui(config_path=args.config)
         return 0
+
+    cfg = load_config(args.config)
+    setup_logging(cfg.logging.level, cfg.logging.file)
 
     if args.dry_run:
         run_dry(cfg)

@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Game Agent Orchestration API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8790
+
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        "200": { description: OK }
+
+  /api/departments:
+    get:
+      summary: List departments
+      responses:
+        "200": { description: OK }
+
+  /api/agents:
+    get:
+      summary: List agents
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Create agent
+      responses:
+        "201": { description: Created }
+
+  /api/agents/{id}:
+    delete:
+      summary: Delete agent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+
+  /api/tasks:
+    get:
+      summary: List tasks
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Create task
+      responses:
+        "201": { description: Created }
+
+  /api/tasks/{id}/assign:
+    post:
+      summary: Assign task to agent
+      responses:
+        "200": { description: Assigned }
+
+  /api/tasks/{id}/run:
+    post:
+      summary: Start task run
+      responses:
+        "200": { description: Running }
+
+  /api/tasks/{id}/stop:
+    post:
+      summary: Stop task run
+      responses:
+        "200": { description: Stopped }
+
+  /api/tasks/{id}/review:
+    post:
+      summary: Save review decision
+      responses:
+        "200": { description: Reviewed }
+
+  /api/messages:
+    get:
+      summary: List messages
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Send message
+      responses:
+        "201": { description: Sent }
+
+  /api/audit-logs:
+    get:
+      summary: List audit logs
+      responses:
+        "200": { description: OK }

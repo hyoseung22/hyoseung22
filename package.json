@@ -1,0 +1,14 @@
+{
+  "name": "game-agent-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node apps/api/src/index.js",
+    "dev": "node --watch apps/api/src/index.js",
+    "check": "node --check apps/api/src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

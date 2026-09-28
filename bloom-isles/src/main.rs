@@ -6,11 +6,13 @@
 mod art;
 mod audio;
 mod eco;
+mod export;
 mod hud;
 mod input;
 mod island;
+mod models;
 mod rng;
-mod shots;
+pub mod shots;
 mod sim;
 mod world;
 
@@ -139,6 +141,7 @@ pub struct Ephemeral;
 #[derive(Resource, Default)]
 pub struct Pending {
     pub ev: Vec<Ev>,
+    pub popups: Vec<world::PopupReq>,
 }
 
 #[derive(Resource)]
@@ -147,6 +150,15 @@ pub struct Fonts {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--export") {
+        let dir = args.get(i + 1).cloned().unwrap_or_else(|| "bloom-isles-resources".into());
+        if let Err(e) = export::run(std::path::Path::new(&dir)) {
+            eprintln!("export failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     App::new()
         .insert_resource(ClearColor(art::bc(0x8ed5d2)))
         .insert_resource(Settings::load())
@@ -164,7 +176,6 @@ fn main() {
             }),
             ..default()
         }))
-        .init_gizmo_group::<world::WorldGizmos>()
         .init_gizmo_group::<hud::HudGizmos>()
         .add_plugins(shots::plugin)
         .add_systems(Startup, (setup, hud::setup_title_text).chain())
@@ -181,9 +192,9 @@ fn main() {
                 world::sync_life,
                 world::spawn_particles,
                 world::move_particles,
-                world::draw_overlays,
                 hud::draw_hud,
                 play_sounds,
+                world::retire_studio,
             )
                 .chain(),
         )
@@ -195,6 +206,8 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut audio: ResMut<Assets<AudioSource>>,
     mut fonts: ResMut<Assets<Font>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut gizmo_store: ResMut<GizmoConfigStore>,
 ) {
     let art = art::build_art(&mut images);
@@ -202,13 +215,14 @@ fn setup(
     let font = Font::try_from_bytes(include_bytes!("../assets/fonts/BricolageGrotesque-ExtraBold.ttf").to_vec()).expect("embedded font");
     commands.insert_resource(Fonts { title: fonts.add(font) });
 
-    let (cfg, _) = gizmo_store.config_mut::<world::WorldGizmos>();
-    cfg.render_layers = RenderLayers::layer(LAYER_OVER);
-    cfg.line.width = 3.0;
     let (cfg, _) = gizmo_store.config_mut::<hud::HudGizmos>();
     cfg.render_layers = RenderLayers::layer(LAYER_HUD);
     cfg.line.width = 4.0;
 
+    let m3 = world::build_models(&mut meshes, &mut materials);
+    let icons = world::spawn_studio(&mut commands, &mut images, &m3);
+    commands.insert_resource(m3);
+    commands.insert_resource(icons);
     world::spawn_cameras(&mut commands);
     world::spawn_background(&mut commands, &art);
     commands.insert_resource(art);

@@ -2,12 +2,13 @@
 //! Drawn immediate-mode: every frame spawns short-lived sprites.
 
 use crate::art::{bc, bca, pal, Art, Tex, TEAM};
-use crate::eco::{def, Sp};
+use crate::eco::def;
 use crate::input::{BtnId, Pointer};
-use crate::island::{Terr, HS};
+use crate::island::{Terr, HS, SQ};
 use crate::rng::Rng;
-use crate::sim::{self, ease_back, ease_io, lerp, Card, Ev, Game, Sfx, DUR, REROLL_CD};
-use crate::world::MainView;
+use crate::sim::{self, ease_back, ease_io, lerp, state_of, Card, Ev, Game, Sfx, DUR, REROLL_CD, WITHER_T};
+use crate::eco::need_w;
+use crate::world::{ground_h, Icons, MainView};
 use crate::{Ephemeral, Fonts, Pending, Scene, Session, Settings, LAYER_HUD};
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
@@ -338,6 +339,7 @@ pub struct HudState {
     /// (moved up?, seconds left)
     rank_flash: Option<(bool, f32)>,
     crowd_seed: u32,
+    popups: Vec<(crate::world::PopupReq, f32)>,
 }
 
 impl HudState {
@@ -398,6 +400,7 @@ pub fn draw_hud(
     session: Res<Session>,
     settings: Res<Settings>,
     art: Res<Art>,
+    icons: Res<Icons>,
     fonts: Res<Fonts>,
     layout: Res<Layout>,
     view: Res<MainView>,
@@ -408,9 +411,18 @@ pub fn draw_hud(
     mut g: Gizmos<HudGizmos>,
     mut logo: Query<(&Logo, &mut Transform, &mut Visibility)>,
     mut rng: Local<Option<Rng>>,
+    gallery: Option<Res<crate::shots::Gallery>>,
 ) {
     let rng = rng.get_or_insert_with(Rng::from_time);
     let dt = time.delta_secs().min(0.05);
+    if gallery.is_some() {
+        let mut pen = Pen { cmd: &mut commands, w: layout.w, h: layout.h, z: 30.0, layer: LAYER_TOP, font: fonts.title.clone() };
+        draw_gallery(&mut pen, &art, &icons, &layout);
+        for (_, _, mut vis) in &mut logo {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
     let l = &*layout;
     let mut pen = Pen { cmd: &mut commands, w: l.w, h: l.h, z: 10.0, layer: LAYER_HUD, font: fonts.title.clone() };
     let t = session.t;
@@ -432,6 +444,12 @@ pub fn draw_hud(
         }
     }
     pending.ev.retain(|e| !matches!(e, Ev::Rank { .. }));
+    let new_pops: Vec<_> = pending.popups.drain(..).map(|p| (p, 0.0)).collect();
+    state.popups.extend(new_pops);
+    for p in &mut state.popups {
+        p.1 += dt;
+    }
+    state.popups.retain(|p| p.1 < p.0.max);
     if let Some((_, left)) = state.rank_flash.as_mut() {
         *left -= dt;
     }
@@ -456,11 +474,11 @@ pub fn draw_hud(
         }
     }
     match session.scene {
-        Scene::Title => draw_title(&mut pen, &art, l, &settings, &pointer, t, session.dice_t),
+        Scene::Title => draw_title(&mut pen, &art, &icons, l, &settings, &pointer, t, session.dice_t),
         Scene::Play | Scene::End => {
             let Some(gm) = session.game.as_ref() else { return };
             if session.scene == Scene::Play {
-                draw_play(&mut pen, &mut g, &art, l, gm, &view, &pointer, &settings, &state, t);
+                draw_play(&mut pen, &mut g, &art, &icons, l, gm, &view, &pointer, &settings, &state, t);
                 if gm.paused {
                     pen.layer = LAYER_TOP;
                     pen.rect(0.0, 0.0, l.w, l.h, &art, bca(pal::SLATE, 0.62));
@@ -471,7 +489,7 @@ pub fn draw_hud(
                 }
             } else {
                 update_show(&mut state, gm, l, rng, dt, &mut pending);
-                draw_end(&mut pen, &art, l, gm, &pointer, &state, t);
+                draw_end(&mut pen, &art, &icons, l, gm, &pointer, &state, t);
             }
         }
     }
@@ -481,11 +499,12 @@ pub fn draw_hud(
     pen.tex(if settings.muted { &art.icon_sound_off } else { &art.icon_sound_on }, l.mute.x, l.mute.y, 1.25, Color::WHITE);
 }
 
-fn draw_title(pen: &mut Pen, art: &Art, l: &Layout, settings: &Settings, pointer: &Pointer, t: f32, dice_t: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_title(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, settings: &Settings, pointer: &Pointer, t: f32, dice_t: f32) {
     let ay = l.logo_y + l.logo_size * 0.72;
     for i in 0..4 {
         let hop = ((t * 2.2 + i as f32 * 0.7).sin()).max(0.0) * 6.0;
-        pen.tex(&art.avatars[i][1], l.w / 2.0 + (i as f32 - 1.5) * 42.0, ay - hop, if i == 0 { 0.8 } else { 0.66 }, Color::WHITE);
+        pen.tex(&icons.pawns[i][1], l.w / 2.0 + (i as f32 - 1.5) * 42.0, ay - hop, if i == 0 { 0.95 } else { 0.8 }, Color::WHITE);
     }
     let p = l.title_play;
     let pulse = Btn { r: p.r * (1.0 + (t * 3.0).sin() * 0.025), ..p };
@@ -507,41 +526,26 @@ fn draw_title(pen: &mut Pen, art: &Art, l: &Layout, settings: &Settings, pointer
     pen.tex(&art.icon_quit, q.x, q.y, 1.0, Color::WHITE);
 }
 
-fn card_icon(pen: &mut Pen, art: &Art, card: Card, x: f32, y: f32, s: f32, alpha: f32) {
+#[allow(clippy::too_many_arguments)]
+fn card_icon(pen: &mut Pen, art: &Art, icons: &Icons, card: Card, x: f32, y: f32, s: f32, alpha: f32) {
     let wc = Color::WHITE.with_alpha(alpha);
+    let fit = |t: &Tex, w: f32| w / t.size.x.max(1.0);
     match card {
         Card::Nature(sp) => {
-            let k = s * icon_k(sp);
-            let head = def(sp).head;
-            let gy = y + head * k * 0.42;
-            pen.tex(art.sp(sp, 1), x, gy, k, wc);
+            let t = &icons.sp[sp.idx()];
+            pen.tex(t, x, y, fit(t, 52.0 * s), wc);
         }
         Card::Storm => {
-            pen.tex(&art.cloud, x, y - 4.0 * s, s * 0.85, wc);
+            pen.tex(&icons.storm, x, y - 6.0 * s, fit(&icons.storm, 52.0 * s), wc);
             pen.tex(&art.bolt, x + 2.0 * s, y + 14.0 * s, s * 0.8, wc);
         }
         Card::Beetle => {
-            pen.tex(&art.beetle, x - 8.0 * s, y + 8.0 * s, s * 1.2, wc);
-            pen.tex_full(&art.beetle, x + 9.0 * s, y - 2.0 * s, Vec2::splat(s * 1.05), 0.0, true, wc);
-            pen.tex(&art.beetle, x - 2.0 * s, y - 12.0 * s, s * 0.9, wc);
+            let t = &icons.beetle;
+            pen.tex(t, x - 9.0 * s, y + 8.0 * s, fit(t, 30.0 * s), wc);
+            pen.tex(t, x + 10.0 * s, y - 1.0 * s, fit(t, 26.0 * s), wc);
+            pen.tex(t, x - 2.0 * s, y - 12.0 * s, fit(t, 22.0 * s), wc);
         }
         Card::Shield => pen.tex(&art.shield, x, y + 4.0 * s, s * 1.2, wc),
-    }
-}
-
-fn icon_k(sp: Sp) -> f32 {
-    match sp {
-        Sp::Bee => 1.05,
-        Sp::Bird => 1.35,
-        Sp::Crab => 1.35,
-        Sp::Frog => 1.4,
-        Sp::Lily => 1.6,
-        Sp::Mushroom => 1.45,
-        Sp::Flower => 1.35,
-        Sp::Rabbit | Sp::Fox => 1.15,
-        Sp::Bush => 1.3,
-        Sp::Tree => 0.9,
-        Sp::Palm => 1.0,
     }
 }
 
@@ -550,16 +554,17 @@ fn portrait_center(l: &Layout, i: usize) -> Vec2 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, state: &HudState, t: f32) {
+fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, state: &HudState, t: f32) {
     let (w, h) = (l.w, l.h);
     let slate = bc(pal::SLATE);
     let me = &gm.players[0];
+    draw_world_overlays(pen, g, art, icons, l, gm, view, pointer, state, t);
 
     if gm.view != 0 {
         let a = l.isle;
         pen.rrect(art, a.x + 4.0, a.y + 4.0, a.w - 8.0, a.h - 8.0, 22.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
         pen.rrect(art, a.x + 6.0, a.y + 6.0, a.w - 12.0, a.h - 12.0, 20.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
-        pen.tex(&art.avatars[gm.view][1], a.x + 34.0, a.y + 38.0, 0.9, Color::WHITE);
+        pen.tex(&icons.pawns[gm.view][1], a.x + 34.0, a.y + 38.0, 1.0, Color::WHITE);
     }
     if gm.fade > 0.0 {
         let a = l.isle;
@@ -610,7 +615,7 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
             }
             pen.circle(art, x, y, 15.0 + (t * 3.0).sin(), bca(pal::GOLD, 0.35));
         }
-        pen.tex(&art.avatars[i][1], x, y, if i == 0 { 0.52 } else { 0.42 }, Color::WHITE);
+        pen.tex(&icons.pawns[i][1], x, y, if i == 0 { 0.62 } else { 0.5 }, Color::WHITE);
     }
     pen.button(art, l.pause, slate, pointer.hover == Some(BtnId::Pause));
     pen.tex(&art.icon_pause, l.pause.x, l.pause.y, 1.2, Color::WHITE);
@@ -636,12 +641,12 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
         pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 10.5, None, Some(edge));
         let mood = if gm.isl[i].hit_t > 0.0 { 0 } else { 1 };
         let ar = (r.h * 0.22).clamp(10.0, 18.0);
-        pen.tex(&art.avatars[i][mood], r.x + ar + 4.0, r.y + ar + 8.0, ar / 24.0, Color::WHITE);
+        pen.tex(&icons.pawns[i][mood], r.x + ar + 4.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
         if gm.isl[i].shield > 0.0 {
             pen.tex(&art.shield, r.x + r.w - ar - 4.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
         }
         if gm.isl[i].whale.as_ref().map(|w| w.active()).unwrap_or(false) {
-            pen.tex(&art.whale, r.x + r.w - 26.0, r.y + r.h - 18.0, 0.32, Color::WHITE);
+            pen.tex(&icons.whale, r.x + r.w - 26.0, r.y + r.h - 20.0, 0.34, Color::WHITE);
         }
         if hot {
             let c = r.center();
@@ -670,14 +675,14 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
             g.line_2d(to_screen(w, h, path(k0)), to_screen(w, h, path(k1)), bca(pal::CREAM, 0.6));
         }
         let p = path(k);
-        card_icon(pen, art, f.card, p.x, p.y, 0.9, 1.0);
-        pen.tex(&art.avatars[f.from][1], p.x - 18.0, p.y - 14.0, 0.4, Color::WHITE);
+        card_icon(pen, art, icons, f.card, p.x, p.y, 0.9, 1.0);
+        pen.tex(&icons.pawns[f.from][1], p.x - 18.0, p.y - 14.0, 0.5, Color::WHITE);
     }
     pen.layer = old;
 
     // hand
     for i in 0..4 {
-        draw_card(pen, g, art, l, gm, pointer, i);
+        draw_card(pen, g, art, icons, l, gm, pointer, i);
     }
     // combo meter
     if gm.combo >= 2 && gm.t - gm.last_place < 6.0 {
@@ -709,16 +714,16 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
         if d.moved {
             if let Some(c) = me.hand[d.si].card {
                 pen.layer = LAYER_TOP;
-                card_icon(pen, art, c, pointer.pos.x, pointer.pos.y - 26.0, 1.1, 0.9);
+                card_icon(pen, art, icons, c, pointer.pos.x, pointer.pos.y - 26.0, 1.1, 0.9);
                 pen.layer = old;
             }
         }
     }
-    draw_tutorial(pen, art, l, gm, view, pointer, settings, t);
+    draw_tutorial(pen, art, icons, l, gm, view, pointer, settings, t);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, i: usize) {
+fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, pointer: &Pointer, i: usize) {
     let s = &gm.players[0].hand[i];
     let r = l.cards[i];
     let sel = gm.sel == Some(i);
@@ -752,7 +757,7 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
         pen.rect(x0 + 2.5, y0 + h * 0.6, (w - 5.0).max(0.0), h * 0.28, art, band);
     }
     if flip > 0.3 {
-        card_icon(pen, art, card, cx, cy - h * 0.06, r.w / 64.0 * flip.min(1.0), 1.0);
+        card_icon(pen, art, icons, card, cx, cy - h * 0.06, r.w / 64.0 * flip.min(1.0), 1.0);
         let (gx, gy) = (x0 + 12.0, y0 + 12.0);
         match card {
             Card::Nature(sp) => {
@@ -782,7 +787,7 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_tutorial(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, t: f32) {
+fn draw_tutorial(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, t: f32) {
     if gm.paused || pointer.drag.is_some() {
         return;
     }
@@ -808,7 +813,7 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, view: &MainVie
                     let k = ease_io(((cyc - 0.2) / 0.55).clamp(0.0, 1.0));
                     let p = a.lerp(b, k);
                     if cyc > 0.15 && cyc < 0.8 {
-                        card_icon(pen, art, Card::Nature(sp), p.x, p.y - 22.0, 1.0, 0.7);
+                        card_icon(pen, art, icons, Card::Nature(sp), p.x, p.y - 22.0, 1.0, 0.7);
                     }
                     hand(pen, p, press);
                 }
@@ -907,7 +912,8 @@ fn update_show(state: &mut HudState, gm: &Game, l: &Layout, rng: &mut Rng, dt: f
     state.sparks.retain(|s| s.life < s.max);
 }
 
-fn draw_end(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, state: &HudState, t: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_end(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game, pointer: &Pointer, state: &HudState, t: f32) {
     let et = gm.end_t;
     let k = (et / 0.6).clamp(0.0, 1.0);
     // the dim sits under the island panels (they are live cameras)
@@ -945,7 +951,7 @@ fn draw_end(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, 
         pen.text(r.x + r.w / 2.0, r.y + r.h + 8.0 + pl / 2.0, (pl * 0.55).clamp(14.0, 26.0), if rank == 0 { slate } else { bc(pal::CREAM) }, &format!("{shown:.0}"));
         let mood = if rank == 0 { 2 } else if rank == 3 { 0 } else { 1 };
         let hop = if rank == 0 { ((t * 5.0).sin()).max(0.0) * 8.0 } else { 0.0 };
-        pen.tex(&art.avatars[p][mood], r.x + r.w / 2.0, r.y - 6.0 - hop, if rank == 0 { 1.0 } else { 0.78 }, Color::WHITE);
+        pen.tex(&icons.pawns[p][mood], r.x + r.w / 2.0, r.y - 12.0 - hop, if rank == 0 { 1.25 } else { 0.95 }, Color::WHITE);
         if rank == 0 {
             pen.tex(&art.crown, r.x + r.w / 2.0, r.y - 50.0 - hop + (t * 3.0).sin() * 2.0, 1.0, Color::WHITE);
         }
@@ -969,7 +975,7 @@ fn draw_end(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, 
             let s = if row == 1 { 0.62 } else { 0.72 };
             let shade_k = if row == 1 { 0.62 } else { 0.85 };
             let col = crate::art::shade(c, shade_k);
-            pen.tex_full(&art.pawn, x, yb - jump - 10.0, Vec2::splat(s), ((t * speed * 0.5 + ph).sin()) * 0.12 * ex, false, bc(col));
+            pen.tex_full(&icons.pawn_white, x, yb - jump - 12.0, Vec2::splat(s * 1.15), ((t * speed * 0.5 + ph).sin()) * 0.12 * ex, false, bc(col));
         }
     }
     for c in &state.confetti {
@@ -983,4 +989,218 @@ fn draw_end(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, 
         pen.tex(&art.icon_home, l.end_home.x, l.end_home.y, 1.4, Color::WHITE);
     }
     pen.layer = old;
+}
+
+/* ---------------- world overlays (screen space over the 3D view) ---------------- */
+
+fn state_color(st: u8) -> Color {
+    match st {
+        2 => bc(pal::GREEN),
+        1 => bc(pal::AMBER),
+        _ => bc(pal::RED),
+    }
+}
+
+fn dashed_ellipse(g: &mut Gizmos<HudGizmos>, w: f32, h: f32, c: Vec2, rx: f32, ry: f32, color: Color) {
+    let n = 40;
+    for i in (0..n).step_by(2) {
+        let (a0, a1) = (i as f32 / n as f32 * TAU, (i as f32 + 1.0) / n as f32 * TAU);
+        let p = |a: f32| to_screen(w, h, c + Vec2::new(a.cos() * rx, a.sin() * ry));
+        g.line_2d(p(a0), p(a1), color);
+    }
+}
+
+/// Screen point of a creature's middle and top.
+fn ent_points(isl: &crate::sim::Island, view: &MainView, e: &crate::sim::Creature) -> (Vec2, Vec2) {
+    let gh = ground_h(isl, e.x, e.y);
+    let head = def(e.sp).head * 0.9 * crate::world::PIECE;
+    (view.to_screen_h(e.x, e.y, gh + head * 0.5), view.to_screen_h(e.x, e.y, gh + head))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn relation_lines(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, isl: &crate::sim::Island, view: &MainView, tile: usize, sp: crate::eco::Sp, from: Vec2, t: f32) {
+    for &u in &isl.map.tiles[tile].n2 {
+        let Some((id, usp)) = isl.map.tiles[u].occ else { continue };
+        if u == tile {
+            continue;
+        }
+        let d = isl.map.dist(tile, u);
+        let w = need_w(sp, usp, d) + need_w(usp, sp, d);
+        if w == 0.0 {
+            continue;
+        }
+        let Some(e) = isl.ent(id) else { continue };
+        let to = ent_points(isl, view, e).0;
+        let mid = Vec2::new((from.x + to.x) / 2.0, from.y.min(to.y) - 22.0);
+        let good = w > 0.0;
+        let col = if good { bca(pal::GREEN, 0.95) } else { bca(pal::RED, 0.95) };
+        let pt = |k: f32| from * (1.0 - k) * (1.0 - k) + mid * 2.0 * k * (1.0 - k) + to * k * k;
+        let off = ((t * 4.0) as i32).rem_euclid(2) as usize;
+        for i in 0..24usize {
+            if (i + off) % 2 == 1 {
+                continue;
+            }
+            g.line_2d(to_screen(l.w, l.h, pt(i as f32 / 24.0)), to_screen(l.w, l.h, pt((i as f32 + 0.8) / 24.0)), col);
+        }
+        let hp = pt(0.5);
+        let s = (4.5 + (w.abs() * 12.0).min(3.0)) / 5.0 * 1.3;
+        pen.tex(if good { &art.heart } else { &art.heart_broken }, hp.x, hp.y, s, Color::WHITE);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, state: &HudState, t: f32) {
+    let slot = gm.view;
+    let isl = &gm.isl[slot];
+    let (w, h) = (l.w, l.h);
+    let vs = view.s;
+    // sad creatures carry a little frown badge
+    for e in &isl.ents {
+        if e.dying == 0.0 && state_of(e.hd) == 0 {
+            let top = ent_points(isl, view, e).1;
+            pen.tex(&art.faces[0], top.x, top.y - 12.0 + (t * 3.0 + e.ph).sin() * 1.5, 0.6, Color::WHITE.with_alpha(0.92));
+        }
+    }
+    if !gm.paused {
+        for s in &isl.storms {
+            if !s.active() {
+                continue;
+            }
+            let warn = (s.t / sim::STORM_T).clamp(0.0, 1.0);
+            let c = view.to_screen(s.cx, s.cy);
+            arc(g, w, h, c + Vec2::new(40.0, -26.0) * vs * s.sc, 8.0, -PI / 2.0, 1.0 - warn, bc(pal::RED));
+            for i in 0..s.need {
+                let x = c.x + (i as f32 - (s.need as f32 - 1.0) / 2.0) * 11.0;
+                let col = if i < s.taps { Color::WHITE } else { Color::WHITE.with_alpha(0.35) };
+                pen.circle(art, x, c.y + 36.0 * vs * s.sc, 3.4, col);
+            }
+            let o = view.to_screen(s.x, s.y);
+            dashed_ellipse(g, w, h, o, HS * 2.2 * vs, HS * 2.2 * SQ * vs, bca(pal::RED, 0.5 + (t * 10.0).sin() * 0.3));
+        }
+        for b in &isl.beetles {
+            if b.active() && b.eat > 0.0 {
+                arc(g, w, h, view.to_screen(b.x, b.y - 22.0), 7.0, -PI / 2.0, b.eat / 3.0, bc(pal::RED));
+            }
+        }
+        if let Some(wh) = &isl.whale {
+            if wh.active() && wh.t > 0.4 {
+                let c = view.to_screen_h(wh.x, wh.y, -4.0);
+                for i in 0..6 {
+                    let k = (t * 1.4 + i as f32 / 6.0) % 1.0;
+                    let x = c.x - 14.0 * vs + (i as f32 - 2.5) * 3.0 * k * vs;
+                    let y = c.y - (26.0 + k * 34.0) * vs;
+                    pen.circle(art, x, y, (2.0 + k * 1.5) * vs, bca(0xe6f6fb, 0.85 * (1.0 - k)));
+                }
+                if slot == 0 {
+                    let pul = 1.0 + (t * 6.0).sin() * 0.08;
+                    pen.tex_full(&art.ring, c.x, c.y, Vec2::new(1.6 * pul * vs, 0.95 * pul * vs), 0.0, false, bca(pal::GOLD, 0.9));
+                }
+            }
+        }
+    }
+
+    let sel = gm.selected();
+    let hover = pointer.hover_tile;
+    match sel {
+        Some(Card::Nature(sp)) if slot == 0 && !gm.paused => {
+            let pul = 1.0 + (t * 4.0).sin() * 0.12;
+            for (tile, _v, hh) in gm.hints(sp) {
+                let tl = &isl.map.tiles[tile];
+                let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
+                let st = state_of(hh);
+                // good spots glow, poor spots stay quiet
+                let (r, ring_a, hex_a) = match st {
+                    2 => (5.5 * pul, 1.0, 0.28),
+                    1 => (3.8, 0.8, 0.14),
+                    _ => (2.4, 0.0, 0.05),
+                };
+                pen.tex(&art.hex, p.x, p.y, 0.9 * vs, Color::WHITE.with_alpha(hex_a));
+                if ring_a > 0.0 {
+                    pen.circle(art, p.x, p.y, r + 1.8, Color::WHITE.with_alpha(ring_a));
+                }
+                pen.circle(art, p.x, p.y, r, state_color(st).with_alpha(if st == 0 { 0.5 } else { 1.0 }));
+            }
+            if let Some(tile) = hover {
+                let tl = &isl.map.tiles[tile];
+                let gh = crate::models::terrain_h(tl.t);
+                let head = def(sp).head * 0.9 * crate::world::PIECE;
+                if isl.can_place(tile, sp) {
+                    let (_, hh) = isl.place_value(tile, sp);
+                    let mid = view.to_screen_h(tl.x, tl.y, gh + head * 0.5);
+                    relation_lines(pen, g, art, l, isl, view, tile, sp, mid, t);
+                    let icon = &icons.sp[sp.idx()];
+                    pen.tex(icon, mid.x, mid.y, vs * crate::world::PIECE, Color::WHITE.with_alpha(0.8));
+                    let top = view.to_screen_h(tl.x, tl.y, gh + head);
+                    pen.tex(&art.faces[state_of(hh) as usize], top.x, top.y - 18.0, 1.0, Color::WHITE);
+                } else {
+                    let o = view.to_screen_h(tl.x, tl.y, gh);
+                    g.line_2d(to_screen(w, h, o + Vec2::new(-8.0, -6.0)), to_screen(w, h, o + Vec2::new(8.0, 6.0)), bc(pal::RED));
+                    g.line_2d(to_screen(w, h, o + Vec2::new(8.0, -6.0)), to_screen(w, h, o + Vec2::new(-8.0, 6.0)), bc(pal::RED));
+                }
+            }
+        }
+        Some(Card::Storm) if slot != 0 => {
+            if let Some(tile) = hover {
+                let tl = &isl.map.tiles[tile];
+                let o = view.to_screen(tl.x, tl.y);
+                dashed_ellipse(g, w, h, o, HS * 2.2 * vs, HS * 2.2 * SQ * vs, bc(pal::RED));
+                pen.tex(&icons.storm, o.x, o.y - 80.0 * vs, 1.1 * vs, Color::WHITE.with_alpha(0.75));
+            }
+        }
+        None if gm.shovel && slot == 0 => {
+            for tl in isl.map.tiles.iter().filter(|t| t.occ.is_some()) {
+                let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
+                pen.tex(&art.hex_line, p.x, p.y, 0.9 * vs, Color::WHITE.with_alpha(0.55));
+            }
+            if let Some(tile) = hover {
+                let tl = &isl.map.tiles[tile];
+                if tl.occ.is_some() {
+                    let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
+                    pen.tex(&art.hex_line, p.x, p.y, 0.95 * vs, bc(pal::RED));
+                }
+            }
+        }
+        None => {
+            if let Some((id, sp)) = gm.inspect.and_then(|tile| isl.map.tiles.get(tile)).and_then(|t| t.occ) {
+                if let Some(e) = isl.ent(id) {
+                    let (mid, top) = ent_points(isl, view, e);
+                    relation_lines(pen, g, art, l, isl, view, e.tile, sp, mid, t);
+                    let st = state_of(e.h);
+                    pen.tex(&art.faces[st as usize], top.x, top.y - 18.0, 1.0, Color::WHITE);
+                    if st == 0 && e.sad_t > 0.0 {
+                        arc(g, w, h, top - Vec2::new(0.0, 18.0), 14.0, -PI / 2.0, 1.0 - e.sad_t / WITHER_T, bc(pal::RED));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    // floating labels: +3, x4, MEGA!, WOW!
+    for (p, age) in &state.popups {
+        if p.slot != slot {
+            continue;
+        }
+        let k = age / p.max;
+        let pop = if *age < 0.25 { ease_back(age / 0.25) } else { 1.0 };
+        let base = view.to_screen(p.x, p.y);
+        let a = if k > 0.7 { (1.0 - k) / 0.3 } else { 1.0 };
+        pen.text(base.x, base.y - 34.0 * k.sqrt(), p.size * pop.max(0.05), bca(p.color, a), &p.text);
+    }
+}
+
+/// Every 3D model render on one sheet (used for sharing the resources).
+fn draw_gallery(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout) {
+    pen.rect(0.0, 0.0, l.w, l.h, art, bc(0xe9e2d2));
+    let mut items: Vec<&Tex> = icons.sp.iter().collect();
+    items.extend([&icons.storm, &icons.beetle, &icons.whale]);
+    for p in &icons.pawns {
+        items.extend(p.iter());
+    }
+    let cols = 8;
+    let cell = (l.w - 40.0) / cols as f32;
+    for (i, t) in items.iter().enumerate() {
+        let (cx, cy) = (20.0 + (i % cols) as f32 * cell + cell / 2.0, 20.0 + (i / cols) as f32 * cell * 0.95 + cell / 2.0);
+        pen.rrect(art, cx - cell * 0.46, cy - cell * 0.44, cell * 0.92, cell * 0.88, 12.0, Some(bc(0xf6f1e6)), Some(bca(pal::SLATE, 0.25)));
+        pen.tex(t, cx, cy, cell * 0.8 / t.size.x.max(1.0), Color::WHITE);
+    }
 }

@@ -19,8 +19,6 @@ pub enum Terr {
 }
 
 pub const DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
-/// Neighbour across edge i, where edge i joins hex vertex i and i+1.
-pub const EDGE_DIR: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)];
 
 pub fn hex_vertex(i: usize) -> (f32, f32) {
     let a = (60.0 * i as f32 - 30.0).to_radians();

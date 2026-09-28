@@ -16,7 +16,30 @@ pub struct Shots {
     step: usize,
 }
 
+/// Present when the game runs as a model contact sheet (BLOOM_GALLERY=<file.png>).
+#[derive(Resource)]
+pub struct Gallery {
+    path: String,
+    t: f32,
+}
+
+fn gallery(mut commands: Commands, time: Res<Time>, mut g: ResMut<Gallery>, mut exit: EventWriter<AppExit>, mut shot_taken: Local<bool>) {
+    g.t += time.delta_secs();
+    if g.t > 3.0 && !*shot_taken {
+        *shot_taken = true;
+        let path = g.path.clone();
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    }
+    if g.t > 5.0 {
+        exit.write(AppExit::Success);
+    }
+}
+
 pub fn plugin(app: &mut App) {
+    if let Ok(path) = std::env::var("BLOOM_GALLERY") {
+        app.insert_resource(Gallery { path, t: 0.0 });
+        app.add_systems(Update, gallery);
+    }
     if std::env::var("BLOOM_TRACE").is_ok() {
         app.add_systems(Update, trace.after(crate::tick));
     }

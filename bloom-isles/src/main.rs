@@ -57,13 +57,13 @@ impl Session {
         self.dice_t = 0.0;
     }
 
-    pub fn start_game(&mut self, diff: usize) {
+    pub fn start_game(&mut self, diff: usize, best: f32) {
         let mut map = self.title.map.clone();
         for t in &mut map.tiles {
             t.occ = None;
         }
         let rng = Rng::new(self.rng.next_u32());
-        self.game = Some(Game::new(map, diff, rng));
+        self.game = Some(Game::new(map, diff, best, rng));
         self.scene = Scene::Play;
         self.gen += 1;
     }
@@ -75,13 +75,14 @@ impl Session {
     }
 }
 
-/// Persisted between runs: difficulty, sound and which tutorial hints were learned.
+/// Persisted between runs: difficulty, sound, best score and which tutorial hints were learned.
 #[derive(Resource, Clone)]
 pub struct Settings {
     pub diff: usize,
     pub muted: bool,
+    pub best: f32,
     pub tut_place: bool,
-    pub tut_attack: bool,
+    pub tut_biome: bool,
     pub tut_defend: bool,
 }
 
@@ -95,7 +96,7 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        let mut s = Settings { diff: 1, muted: false, tut_place: false, tut_attack: false, tut_defend: false };
+        let mut s = Settings { diff: 1, muted: false, best: 0.0, tut_place: false, tut_biome: false, tut_defend: false };
         if let Some(text) = Self::path().and_then(|p| std::fs::read_to_string(p).ok()) {
             for line in text.lines() {
                 let mut kv = line.splitn(2, '=');
@@ -104,8 +105,9 @@ impl Settings {
                 match k.trim() {
                     "diff" => s.diff = v.parse::<usize>().unwrap_or(1).min(2),
                     "muted" => s.muted = b,
+                    "best" => s.best = v.parse::<f32>().unwrap_or(0.0).max(0.0),
                     "tut_place" => s.tut_place = b,
-                    "tut_attack" => s.tut_attack = b,
+                    "tut_biome" => s.tut_biome = b,
                     "tut_defend" => s.tut_defend = b,
                     _ => {}
                 }
@@ -123,11 +125,12 @@ impl Settings {
         let _ = std::fs::write(
             p,
             format!(
-                "diff={}\nmuted={}\ntut_place={}\ntut_attack={}\ntut_defend={}\n",
+                "diff={}\nmuted={}\nbest={:.0}\ntut_place={}\ntut_biome={}\ntut_defend={}\n",
                 self.diff,
                 b(self.muted),
+                self.best,
                 b(self.tut_place),
-                b(self.tut_attack),
+                b(self.tut_biome),
                 b(self.tut_defend)
             ),
         );
@@ -253,6 +256,7 @@ pub fn tick(time: Res<Time>, mut session: ResMut<Session>, mut pending: ResMut<P
             }
         }
         Scene::Play | Scene::End => {
+            let playing = session.scene == Scene::Play;
             let Some(g) = session.game.as_mut() else { return };
             g.update(dt);
             let events: Vec<Ev> = g.ev.drain(..).collect();
@@ -269,8 +273,8 @@ pub fn tick(time: Res<Time>, mut session: ResMut<Session>, mut pending: ResMut<P
                 settings.tut_place = true;
                 changed = true;
             }
-            if g.attacks > 0 && !settings.tut_attack {
-                settings.tut_attack = true;
+            if g.biomes_placed > 0 && !settings.tut_biome {
+                settings.tut_biome = true;
                 changed = true;
             }
             if g.defends > 0 && !settings.tut_defend {
@@ -280,9 +284,14 @@ pub fn tick(time: Res<Time>, mut session: ResMut<Session>, mut pending: ResMut<P
             if changed {
                 settings.save();
             }
-            if g.over && session.scene == Scene::Play {
+            if g.over && playing {
+                let (stars, score) = (g.stars, g.final_score);
+                if score > settings.best {
+                    settings.best = score.round();
+                    settings.save();
+                }
                 session.scene = Scene::End;
-                hud_state.start_confetti(session.game.as_ref().map(|g| g.ranks.first() == Some(&0)).unwrap_or(false));
+                hud_state.start_show(stars);
             }
         }
     }

@@ -2,7 +2,8 @@
 //! Only active when the `BLOOM_SHOTS` environment variable names an output folder.
 
 use crate::input::Pointer;
-use crate::sim::{Card, Fly};
+use crate::eco::Biome;
+use crate::sim::Card;
 use crate::world::MainView;
 use crate::Session;
 use bevy::app::AppExit;
@@ -65,7 +66,7 @@ fn run(
     mut exit: EventWriter<AppExit>,
 ) {
     shots.t += time.delta_secs();
-    let steps: [f32; 14] = [2.5, 3.0, 5.0, 5.5, 8.5, 9.0, 13.0, 13.5, 16.0, 16.5, 17.5, 19.5, 20.0, 23.5];
+    let steps: [f32; 16] = [2.5, 3.0, 5.0, 5.5, 8.5, 9.0, 12.0, 12.5, 15.5, 16.0, 19.0, 19.5, 20.5, 22.5, 23.0, 26.5];
     if shots.step >= steps.len() {
         if shots.t > steps[steps.len() - 1] + 1.5 {
             exit.write(AppExit::Success);
@@ -76,84 +77,107 @@ fn run(
         return;
     }
     let dir = shots.dir.clone();
+    // the tile where the first biome goes: an open, busy-ish spot
+    let pick = |g: &crate::sim::Game, avoid: &[usize]| -> Option<usize> {
+        let isl = &g.isl[0];
+        (0..isl.map.tiles.len())
+            .filter(|&t| isl.can_biome(t) && !avoid.iter().any(|&a| isl.map.dist(a, t) < 3))
+            .max_by_key(|&t| {
+                let tl = &isl.map.tiles[t];
+                tl.n1.len() as i32 * 4 + tl.n1.iter().filter(|&&u| isl.map.tiles[u].occ.is_some()).count() as i32 - (tl.x.abs() / 30.0) as i32
+            })
+    };
     match shots.step {
         0 => shot(&mut commands, &dir, "1-title"),
-        1 => session.start_game(1),
+        1 => session.start_game(1, 240.0),
         2 => shot(&mut commands, &dir, "2-start"),
         3 => {
-            // fast-forward: a bot plays for the player for a while
+            // fast-forward: the autopilot plays for a while
             let g = session.game.as_mut().unwrap();
-            g.players[0].bot = true;
-            for _ in 0..1500 {
+            g.auto = true;
+            for _ in 0..1300 {
                 g.update(0.05);
             }
             g.ev.clear();
-            g.players[0].bot = false;
+            g.auto = false;
             g.placed = 1;
-            g.weather = crate::sim::Weather::Rain;
-            g.weather_t = 12.0;
-            g.players[0].hand[0].card = Some(Card::Nature(crate::eco::Sp::Bee));
-            g.players[0].hand[1].card = Some(Card::Storm);
+            g.biomes_placed = 0;
+            g.weather = crate::sim::Weather::Clear;
+            g.weather_t = 30.0;
+            g.hand[0].card = Some(Card::Biome(Biome::Volcano));
+            g.hand[1].card = Some(Card::Biome(Biome::Lake));
+            g.hand[2].card = Some(Card::Nature(crate::eco::Sp::Deer));
             g.sel = Some(0);
             g.isl[0].storms.clear();
             g.isl[0].beetles.clear();
-            g.isl[0].shield = 0.0;
             g.isl[0].whale = None;
-            g.isl[0].whale_t = 0.0;
-            let hints = g.hints(crate::eco::Sp::Bee);
+            g.isl[0].whale_t = 99.0;
+            if let Some(t) = pick(g, &[]) {
+                let tl = &g.isl[0].map.tiles[t];
+                ptr.pos = view.to_screen(tl.x, tl.y);
+            }
+        }
+        4 => shot(&mut commands, &dir, "3-biome-preview"),
+        5 => {
+            let g = session.game.as_mut().unwrap();
+            let a = pick(g, &[]).unwrap_or(0);
+            g.play(0, a);
+            let b = pick(g, &[a]).unwrap_or(0);
+            g.play(1, b);
+            g.sel = None;
+            ptr.pos = Vec2::new(-100.0, -100.0);
+        }
+        6 => {
+            let g = session.game.as_mut().unwrap();
+            g.isl[0].erupt_t = 0.0;
+        }
+        7 => shot(&mut commands, &dir, "4-volcano-lake"),
+        8 => {
+            let g = session.game.as_mut().unwrap();
+            let avoid: Vec<usize> = g.isl[0].biomes.iter().map(|b| b.1).collect();
+            g.hand[0].card = Some(Card::Biome(Biome::Peak));
+            g.hand[1].card = Some(Card::Biome(Biome::Desert));
+            if let Some(c) = pick(g, &avoid) {
+                g.play(0, c);
+            }
+            let avoid: Vec<usize> = g.isl[0].biomes.iter().map(|b| b.1).collect();
+            if let Some(c) = pick(g, &avoid) {
+                g.play(1, c);
+            }
+            for _ in 0..500 {
+                g.update(0.05);
+            }
+            g.ev.clear();
+            g.weather = crate::sim::Weather::Rain;
+            g.weather_t = 12.0;
+            g.hand[2].card = Some(Card::Nature(crate::eco::Sp::Goat));
+            g.sel = Some(2);
+            let hints = g.hints(crate::eco::Sp::Goat);
             if let Some(best) = hints.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) {
                 let t = &g.isl[0].map.tiles[best.0];
                 ptr.pos = view.to_screen(t.x, t.y);
             }
-            // show a burst of interactions between neighbours
-            let ents: Vec<(f32, f32)> = g.isl[0].ents.iter().map(|e| (e.x, e.y)).collect();
-            let kinds = [crate::sim::Link::Pollinate, crate::sim::Link::Graze, crate::sim::Link::Hunt, crate::sim::Link::Seed, crate::sim::Link::Tongue];
-            for (k, w) in ents.windows(2).take(10).enumerate() {
-                let ((ax, ay), (bx, by)) = (w[0], w[1]);
-                if (ax - bx).hypot(ay - by) < 120.0 {
-                    g.ev.push(crate::sim::Ev::Link { isl: 0, kind: kinds[k % kinds.len()], ax, ay, bx, by, ok: k % 3 != 0 });
-                }
-            }
-            if let Some(&(x, y)) = ents.get(3) {
-                g.ev.push(crate::sim::Ev::Fear { isl: 0, x, y });
-            }
-            g.ev.push(crate::sim::Ev::Weather(crate::sim::Weather::Rain));
         }
-        4 => shot(&mut commands, &dir, "3-preview"),
-        5 => {
-            let g = session.game.as_mut().unwrap();
-            g.fly.push(Fly { card: Card::Storm, from: 2, to: 0, t: 1.1, dur: 1.15, tile: None, done: false });
-            g.fly.push(Fly { card: Card::Beetle, from: 1, to: 0, t: 1.1, dur: 1.15, tile: None, done: false });
-            g.sel = Some(1);
-        }
-        6 => shot(&mut commands, &dir, "4-storm-aim"),
-        7 => {
+        9 => shot(&mut commands, &dir, "5-four-biomes-rain"),
+        10 => {
             let g = session.game.as_mut().unwrap();
             g.sel = None;
             g.weather = crate::sim::Weather::Wind;
             g.weather_t = 12.0;
-            // inspect an animal
             g.inspect = g.isl[0].ents.iter().find(|e| !crate::eco::def(e.sp).plant && e.dying == 0.0).map(|e| e.tile);
-            if let Some(e) = g.isl[0].ents.iter_mut().find(|e| !crate::eco::def(e.sp).plant) {
-                e.fed = 0.15;
-            }
+            ptr.pos = Vec2::new(-100.0, -100.0);
         }
-        8 => shot(&mut commands, &dir, "5-inspect-wind"),
-        9 => {
-            let g = session.game.as_mut().unwrap();
-            g.view = 0;
-            g.isl[0].score = crate::sim::GOAL + 1.0;
-        }
-        10 => {
-            let g = session.game.as_mut().unwrap();
-            g.end_t = 2.0;
-        }
-        11 => shot(&mut commands, &dir, "6-end-reveal"),
+        11 => shot(&mut commands, &dir, "6-inspect-wind"),
         12 => {
             let g = session.game.as_mut().unwrap();
-            g.end_t = 5.0;
+            g.t = crate::sim::DUR - 0.01;
         }
-        13 => shot(&mut commands, &dir, "7-end-final"),
+        13 => {
+            let g = session.game.as_mut().unwrap();
+            g.end_t = 2.6;
+        }
+        14 => shot(&mut commands, &dir, "7-end-stars"),
+        15 => shot(&mut commands, &dir, "8-end-final"),
         _ => {}
     }
     shots.step += 1;
@@ -178,7 +202,7 @@ fn trace(time: Res<Time>, session: Res<Session>, view: Res<MainView>, mut acc: L
         _ => None,
     });
     println!(
-        "TRACE scene={:?} t={:.1} placed={} attacks={} sel={:?} view={} ents={} hint={:?} paused={}",
-        session.scene, g.t, g.placed, g.attacks, g.sel, g.view, g.isl[0].ents.len(), hint.map(|p| (p.x as i32, p.y as i32)), g.paused
+        "TRACE scene={:?} t={:.1} placed={} biomes={} sel={:?} ents={} hint={:?} paused={}",
+        session.scene, g.t, g.placed, g.biomes_placed, g.sel, g.isl[0].ents.len(), hint.map(|p| (p.x as i32, p.y as i32)), g.paused
     );
 }

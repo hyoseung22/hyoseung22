@@ -23,8 +23,6 @@ pub mod pal {
     pub const AMBER: u32 = 0xe8a21b;
     pub const SEA: u32 = 0x2a88a4;
     pub const WAVE: u32 = 0x7cc6d6;
-    pub const PORTRAIT: u32 = 0x2f8ba6;
-    pub const PORTRAIT_VIEW: u32 = 0x3fa3bd;
 }
 
 
@@ -247,7 +245,9 @@ pub const SP_RES: f32 = 3.0;
 #[derive(Resource, Clone)]
 pub struct Art {
     pub bolt: Tex,
-    pub shield: Tex,
+    /// Five-pointed star: filled (white, tinted when drawn) and outline.
+    pub star: Tex,
+    pub star_line: Tex,
     pub heart: Tex,
     pub heart_broken: Tex,
     pub spark: Tex,
@@ -263,7 +263,6 @@ pub struct Art {
     pub crown: Tex,
     pub rrect_fill: Tex,
     pub rrect_line: Tex,
-    pub rrect_mask: Tex,
     pub wave: Tex,
     pub glyph_leaf: Tex,
     pub glyph_paw: Tex,
@@ -300,7 +299,12 @@ pub fn build_art(images: &mut Assets<Image>) -> Art {
             c.poly(&pts, 0xf5c542);
             c.poly(&clip_left(&pts, 0.5), 0xfbe08a);
         }),
-        shield: make(images, 40.0, 36.0, 20.0, 22.0, r, draw_shield_icon),
+        star: make(images, 40.0, 40.0, 20.0, 21.0, r, |c| {
+            c.fill(&star_path(15.5), col(0xffffff));
+        }),
+        star_line: make(images, 40.0, 40.0, 20.0, 21.0, r, |c| {
+            c.stroke(&star_path(14.0), col(0xffffff), 2.6);
+        }),
         heart: make(images, 16.0, 16.0, 8.0, 8.0, 4.0, |c| {
             c.fill(&heart_path(0.0, 0.0, 5.0), col(0xe0474c));
             c.fill(&heart_path(-1.2, -1.2, 2.0), cola(0xffffff, 0.35));
@@ -334,16 +338,6 @@ pub fn build_art(images: &mut Assets<Image>) -> Art {
         }),
         rrect_fill: make(images, 64.0, 64.0, 0.0, 0.0, 1.0, |c| c.fill(&rrect(1.0, 1.0, 62.0, 62.0, 14.0), col(0xffffff))),
         rrect_line: make(images, 64.0, 64.0, 0.0, 0.0, 1.0, |c| c.stroke(&rrect(2.0, 2.0, 60.0, 60.0, 13.0), col(0xffffff), 2.2)),
-        rrect_mask: make(images, 64.0, 64.0, 0.0, 0.0, 1.0, |c| {
-            c.fill(&rect(0.0, 0.0, 64.0, 64.0), col(0xffffff));
-            if let Some(p) = rrect(1.5, 1.5, 61.0, 61.0, 14.0) {
-                let mut paint = Paint::default();
-                paint.set_color(SkColor::from_rgba8(0, 0, 0, 255));
-                paint.anti_alias = true;
-                paint.blend_mode = tiny_skia::BlendMode::DestinationOut;
-                c.pm.fill_path(&p, &paint, FillRule::Winding, Tf::identity(), None);
-            }
-        }),
         wave: make(images, 32.0, 10.0, 16.0, 5.0, 2.0, |c| c.line(&[(-12.0, 3.0), (-6.0, -1.0), (0.0, 3.0), (6.0, -1.0), (12.0, 3.0)], col(0xffffff), 1.6)),
         glyph_leaf: make(images, 14.0, 10.0, 7.0, 5.0, r, |c| c.two_tone(&[(-5.5, 2.0), (0.0, -3.0), (5.5, -2.0), (0.0, 3.0)], 0x5a9a3c, 0.0)),
         glyph_paw: make(images, 14.0, 14.0, 7.0, 7.0, r, |c| {
@@ -510,17 +504,15 @@ pub fn heart_path(x: f32, y: f32, s: f32) -> Option<Path> {
     b.done()
 }
 
-fn draw_shield_icon(c: &mut Cv) {
-    c.ell(0.0, 6.0, 17.0, 5.0, 0.0, col(0x8a6a44));
-    c.ell(0.0, 5.0, 17.0, 5.0, 0.0, col(0xc49a62));
+fn star_path(r: f32) -> Option<tiny_skia::Path> {
     let mut b = Pb::new();
-    b.m(-15.0, 5.0);
-    b.c(-15.0, -22.0, 15.0, -22.0, 15.0, 5.0);
-    let p = b.done();
-    c.fill(&p, cola(0x9fe0ff, 0.45));
-    c.stroke(&p, cola(0xe6f8ff, 0.9), 1.6);
-    c.ell(-7.0, -8.0, 2.4, 5.5, 0.5, cola(0xffffff, 0.7));
-    c.two_tone(&[(0.0, 5.0), (-4.0, -2.0), (0.0, -6.0), (4.0, -2.0)], 0x5a9a3c, 0.0);
+    for i in 0..10 {
+        let rr = if i % 2 == 0 { r } else { r * 0.45 };
+        let a = i as f32 / 10.0 * TAU - std::f32::consts::FRAC_PI_2;
+        b.l(a.cos() * rr, a.sin() * rr);
+    }
+    b.close();
+    b.done()
 }
 
 

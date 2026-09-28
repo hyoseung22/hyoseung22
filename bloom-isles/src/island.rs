@@ -16,6 +16,27 @@ pub enum Terr {
     Mead,
     Pond,
     Rock,
+    /// Warm, fertile volcanic ash around a volcano.
+    Ash,
+    /// The volcano itself (nothing lives on it).
+    Volcano,
+    /// Deep lake water.
+    Lake,
+    Snow,
+    /// The snowy mountain top (nothing lives on it).
+    Peak,
+    /// Orange desert sand.
+    Dune,
+}
+
+impl Terr {
+    pub fn water(self) -> bool {
+        matches!(self, Terr::Pond | Terr::Lake)
+    }
+    /// A landmark that fills the whole tile.
+    pub fn summit(self) -> bool {
+        matches!(self, Terr::Volcano | Terr::Peak)
+    }
 }
 
 pub const DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
@@ -83,6 +104,12 @@ pub fn soil(t: Terr) -> (f32, f32) {
         Terr::Mead => (0.55, 0.62),
         Terr::Pond => (1.0, 0.5),
         Terr::Rock => (0.35, 0.3),
+        Terr::Ash => (0.22, 0.85),
+        Terr::Volcano => (0.0, 0.5),
+        Terr::Lake => (1.0, 0.55),
+        Terr::Snow => (0.75, 0.35),
+        Terr::Peak => (0.6, 0.2),
+        Terr::Dune => (0.08, 0.12),
     }
 }
 
@@ -143,7 +170,7 @@ pub fn make_deco(t: Terr, rng: &mut Rng) -> Vec<Deco> {
     let count = match t {
         Terr::Grass => 3,
         Terr::Mead => 5,
-        Terr::Sand => 2,
+        Terr::Sand | Terr::Dune | Terr::Snow | Terr::Ash => 2,
         _ => 0,
     };
     (0..count)
@@ -242,7 +269,7 @@ impl IslandMap {
                 continue;
             }
             let inland = DIRS.iter().all(|&(dq, dr)| self.has(t.q + dq, t.r + dr));
-            let beach_only = matches!(t.occ, Some((_, crate::eco::Sp::Palm | crate::eco::Sp::Crab)));
+            let beach_only = t.occ.map(|(_, sp)| !crate::eco::def(sp).terr.contains(&Terr::Grass)).unwrap_or(false);
             if inland && !beach_only {
                 let nt = if rng.f() < 0.35 { Terr::Mead } else { Terr::Grass };
                 self.set_terrain(i, nt, rng);

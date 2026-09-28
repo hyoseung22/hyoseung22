@@ -276,6 +276,7 @@ fn synth(s: Sfx) -> Buf {
     use Wave::*;
     let mut b = Buf::new(match s {
         Sfx::Combo(n) => 100 + n as u32,
+        Sfx::Biome(n) => 200 + n as u32,
         _ => 7,
     });
     match s {
@@ -500,6 +501,79 @@ fn synth(s: Sfx) -> Buf {
             b.noise_bed(4.2, 0.35, 500.0, 3.0, 1);
             b.noise_bed(4.2, 0.12, 1200.0, 4.0, 1);
         }
+        Sfx::Biome(0) | Sfx::Erupt => {
+            // a deep rumble, a boom, then crackling embers
+            let big = s == Sfx::Biome(0);
+            b.noise(if big { 2.4 } else { 1.6 }, 0.9, 110.0, 0.0, 0.7, 0);
+            b.tone(62.0, 1.2, Sine, 0.55, -25.0, 0.15);
+            b.noise(0.5, 0.5, 400.0, 0.2, 0.8, 0);
+            for _ in 0..(if big { 50 } else { 30 }) {
+                let t = 0.3 + b.rng.f() * 1.6;
+                b.noise(0.012, 0.18, 3800.0, t, 1.2, 1);
+            }
+        }
+        Sfx::Biome(1) => {
+            // water rushing in and settling with bubbly notes
+            b.noise(1.4, 0.45, 900.0, 0.0, 0.6, 0);
+            b.noise(0.6, 0.35, 2400.0, 0.1, 0.9, 1);
+            for i in 0..7 {
+                let f = 500.0 + b.rng.f() * 700.0;
+                b.tone(f, 0.08, Sine, 0.08, 500.0, 0.4 + i as f32 * 0.09);
+            }
+            for (i, k) in [7usize, 4, 2, 0].iter().enumerate() {
+                b.pluck(DORIAN[*k], 0.9, 0.16, 0.6 + i as f32 * 0.12, 0.7);
+            }
+        }
+        Sfx::Biome(2) => {
+            // an icy wind and glassy chimes
+            b.noise(1.8, 0.3, 1400.0, 0.0, 3.0, 1);
+            for (i, k) in [7usize, 4, 5, 2, 7].iter().enumerate() {
+                b.tone(DORIAN[*k] * 4.0, 1.3, Sine, 0.05, 0.0, 0.15 + i as f32 * 0.13);
+                b.tone(DORIAN[*k] * 8.0, 0.6, Sine, 0.015, 0.0, 0.15 + i as f32 * 0.13);
+            }
+            b.noise(0.08, 0.25, 2000.0, 0.05, 1.0, 1);
+        }
+        Sfx::Biome(_) => {
+            // hot sand hiss and a winding desert melody
+            b.noise(1.6, 0.18, 4200.0, 0.0, 1.0, 2);
+            let tune = [293.66f32, 311.13, 369.99, 392.0, 369.99, 311.13, 293.66];
+            for (i, f) in tune.iter().enumerate() {
+                b.pluck(*f, 0.6, 0.2, 0.1 + i as f32 * 0.13, 0.9);
+            }
+            b.tone(146.83, 1.4, Tri, 0.06, 0.0, 0.0);
+        }
+        Sfx::Adapt => {
+            // a quick magical twinkle up
+            for i in 0..6 {
+                b.pluck(DORIAN[(i * 2 + 1) % 8] * if i >= 4 { 2.0 } else { 1.0 }, 0.5, 0.14, i as f32 * 0.045, 0.9);
+            }
+            b.tone(DORIAN[7] * 4.0, 0.5, Sine, 0.03, 200.0, 0.1);
+        }
+        Sfx::Discover => {
+            b.tone(DORIAN[4] * 2.0, 0.6, Sine, 0.12, 0.0, 0.0);
+            b.tone(DORIAN[7] * 2.0, 0.8, Sine, 0.12, 0.0, 0.12);
+            b.pluck(DORIAN[7], 0.8, 0.2, 0.12, 0.8);
+            b.crowd(8, 0.9, [0.9, 1.1, 1.05], &[O, O, U], 0.3, 0.1, 0.1);
+        }
+        Sfx::Star(n) => {
+            let k = n.clamp(1, 3) as usize;
+            let root = [DORIAN[0], DORIAN[2], DORIAN[4]][k - 1];
+            for (i, m) in [1.0f32, 1.25, 1.5, 2.0].iter().enumerate() {
+                b.pluck(root * m, 1.1, 0.24, i as f32 * 0.05, 0.9);
+            }
+            b.tone(root * 4.0, 1.2, Sine, 0.07, 0.0, 0.0);
+            b.tone(root * 6.0, 0.9, Sine, 0.03, 0.0, 0.05);
+            b.noise(0.6, 0.12, 7000.0, 0.0, 0.7, 2);
+        }
+        Sfx::NewBest => {
+            let tune = [0usize, 2, 4, 7, 4, 7];
+            for (i, k) in tune.iter().enumerate() {
+                let f = DORIAN[*k] * if i >= 3 { 2.0 } else { 1.0 };
+                b.pluck(f, 0.9, 0.22, i as f32 * 0.11, 0.9);
+                b.tone(f, 0.25, Square, 0.02, 0.0, i as f32 * 0.11);
+            }
+            b.tone(DORIAN[7] * 2.0, 1.2, Tri, 0.08, 0.0, 0.66);
+        }
     }
     b
 }
@@ -557,6 +631,9 @@ pub fn all_sfx() -> Vec<Sfx> {
         Sfx::WindLoop,
     ];
     v.extend((2..=8).map(Sfx::Combo));
+    v.extend((0..4).map(Sfx::Biome));
+    v.extend((1..=3).map(Sfx::Star));
+    v.extend([Sfx::Erupt, Sfx::Adapt, Sfx::Discover, Sfx::NewBest]);
     v
 }
 

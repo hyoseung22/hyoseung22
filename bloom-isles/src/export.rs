@@ -16,7 +16,8 @@ impl Art {
     fn named(&self) -> Vec<(String, &Tex)> {
         let mut v: Vec<(String, &Tex)> = vec![
             ("bolt".into(), &self.bolt),
-            ("shield".into(), &self.shield),
+            ("star".into(), &self.star),
+            ("star_outline".into(), &self.star_line),
             ("heart".into(), &self.heart),
             ("heart_broken".into(), &self.heart_broken),
             ("spark".into(), &self.spark),
@@ -88,17 +89,18 @@ pub fn run(dir: &Path) -> Result<(), String> {
         ("lightning", models::bolt()),
         ("beetle", models::beetle()),
         ("golden_whale", models::whale()),
+        ("volcano", models::volcano()),
+        ("snow_peak", models::peak()),
+        ("pawn_crowd", models::pawn(0xeeeeee, 1)),
     ];
     for (name, m) in props {
         write(mdir.join(format!("{name}.obj")), m.to_obj(name).as_bytes())?;
         count += 1;
     }
-    for (i, team) in ["red", "blue", "yellow", "violet"].iter().enumerate() {
-        for (k, mood) in ["sad", "normal", "happy"].iter().enumerate() {
-            let name = format!("pawn_{team}_{mood}");
-            write(mdir.join(format!("{name}.obj")), models::pawn(art::TEAM[i].0, k as u8).to_obj(&name).as_bytes())?;
-            count += 1;
-        }
+    for b in crate::eco::BIOMES {
+        let name = format!("biome_{}", format!("{b:?}").to_lowercase());
+        write(mdir.join(format!("{name}.obj")), models::biome_icon(b).to_obj(&name).as_bytes())?;
+        count += 1;
     }
     let map = crate::island::generate(20260928);
     write(mdir.join("island_sample.obj"), models::island(&map, 0.8).to_obj("island_sample").as_bytes())?;

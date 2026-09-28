@@ -6,7 +6,7 @@ use crate::eco::def;
 use crate::input::{BtnId, Pointer};
 use crate::island::{Terr, HS, SQ};
 use crate::rng::Rng;
-use crate::sim::{self, ease_back, ease_io, lerp, state_of, Card, Ev, Game, Link, Sfx, Weather, DUR, REROLL_CD, WITHER_T};
+use crate::sim::{self, ease_back, ease_io, state_of, Card, Ev, Game, Link, Sfx, Weather, DUR, REROLL_CD, WITHER_T};
 use crate::eco::need_w;
 use crate::world::{ground_h, Icons, MainView};
 use crate::{Ephemeral, Fonts, Pending, Scene, Session, Settings, LAYER_HUD};
@@ -63,12 +63,13 @@ pub struct Layout {
     pub w: f32,
     pub h: f32,
     pub port: bool,
-    pub p: [R; 4],
+    /// The species collection panel and how many columns it uses.
+    pub dex: R,
+    pub dex_cols: usize,
     pub play: R,
     pub cards: [R; 4],
     pub reroll: Btn,
     pub shovel: Btn,
-    pub home: Btn,
     pub isle: R,
     pub timer: Btn,
     pub pause: Btn,
@@ -81,14 +82,23 @@ pub struct Layout {
     pub title_dice: Btn,
     pub title_diff: [R; 3],
     pub title_quit: Btn,
-    pub end_panels: Vec<Option<R>>,
+    pub end_isle: R,
     pub end_again: Btn,
     pub end_home: Btn,
     pub pause_resume: Btn,
     pub pause_home: Btn,
 }
 
-pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<Session>, mut l: ResMut<Layout>) {
+/// Cell `i` of the collection panel (species first, then the four biomes).
+pub fn dex_cell(l: &Layout, i: usize) -> R {
+    let cols = l.dex_cols.max(1);
+    let cw = (l.dex.w - 12.0) / cols as f32;
+    R::new(l.dex.x + 6.0 + (i % cols) as f32 * cw, l.dex.y + 6.0 + (i / cols) as f32 * cw, cw, cw)
+}
+
+pub const DEX_CELLS: usize = crate::eco::N + 4;
+
+pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, mut l: ResMut<Layout>) {
     let (w, h) = (window.width().max(200.0), window.height().max(200.0));
     let port = w < h * 0.95;
     let top = 58.0;
@@ -96,24 +106,28 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<
     l.h = h;
     l.port = port;
     if !port {
-        let mut pw = (w * 0.17).clamp(118.0, 200.0);
-        let mut ph = pw * 0.72;
+        // a column of species on the right
         let room = h - top - 18.0;
-        if ph * 4.0 + 30.0 > room {
-            ph = (room - 30.0) / 4.0;
-            pw = ph / 0.72;
+        let mut cols = 3;
+        let mut pw = (w * 0.14).clamp(118.0, 180.0);
+        let rows = |cols: usize| DEX_CELLS.div_ceil(cols) as f32;
+        while (pw - 12.0) / cols as f32 * rows(cols) + 12.0 > room && cols < 6 {
+            cols += 1;
+            pw = (w * 0.16).clamp(118.0, 220.0);
         }
-        for i in 0..4 {
-            l.p[i] = R::new(w - pw - 14.0, top + 4.0 + i as f32 * (ph + 10.0), pw, ph);
-        }
-        l.play = R::new(0.0, top, w - pw - 28.0, h - top);
+        let cw = (pw - 12.0) / cols as f32;
+        l.dex = R::new(w - pw - 12.0, top + 2.0, pw, cw * rows(cols) + 12.0);
+        l.dex_cols = cols;
+        l.play = R::new(0.0, top, w - pw - 24.0, h - top);
     } else {
-        let pw = (w - 28.0 - 24.0) / 4.0;
-        let ph = pw * 0.72;
-        for i in 0..4 {
-            l.p[i] = R::new(14.0 + i as f32 * (pw + 8.0), top + 2.0, pw, ph);
-        }
-        l.play = R::new(0.0, top + ph + 10.0, w, h - (top + ph + 10.0));
+        let cols = 14;
+        let pw = w - 24.0;
+        let cw = (pw - 12.0) / cols as f32;
+        let rows = DEX_CELLS.div_ceil(cols) as f32;
+        l.dex = R::new(12.0, top + 2.0, pw, cw * rows + 12.0);
+        l.dex_cols = cols;
+        let y0 = l.dex.y + l.dex.h + 6.0;
+        l.play = R::new(0.0, y0, w, h - y0);
     }
     let pl = l.play;
     let cw = (pl.w * 0.15).min(h * 0.11).clamp(56.0, 94.0);
@@ -127,13 +141,12 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<
     let br = cw * 0.34;
     l.reroll = Btn { x: l.cards[0].x - br - gap * 1.6, y: cy + ch * 0.5, r: br };
     l.shovel = Btn { x: l.cards[3].x + cw + br + gap * 1.6, y: cy + ch * 0.5, r: br };
-    l.home = Btn { x: l.reroll.x, y: cy - br * 1.4 - 10.0, r: br * 1.05 };
     l.isle = R::new(pl.x + 10.0, pl.y + 6.0, pl.w - 20.0, cy - pl.y - 8.0);
     l.timer = Btn { x: 34.0, y: 30.0, r: 19.0 };
     l.pause = Btn { x: w - 30.0, y: 30.0, r: 17.0 };
     l.mute = Btn { x: w - 70.0, y: 30.0, r: 17.0 };
     let rx0 = 112.0;
-    let rx1 = if port { w - 100.0 } else { (pl.x + pl.w - 20.0).min(w - 110.0) };
+    let rx1 = w - 100.0;
     l.race = R::new(rx0, 30.0, (rx1 - rx0 - 28.0).max(80.0), 14.0);
 
     // title
@@ -153,41 +166,12 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<
     l.pause_resume = Btn { x: w / 2.0, y: h / 2.0, r: 46.0 };
     l.pause_home = Btn { x: w / 2.0 - 100.0, y: h / 2.0, r: 28.0 };
 
-    // end screen: a podium. 2nd | 1st | 3rd, and 4th off to the side.
-    l.end_panels = vec![None; 4];
-    if let (Scene::End, Some(g)) = (session.scene, session.game.as_ref()) {
-        let gap = 24.0;
-        let pw = if port { ((w - 60.0) / 2.0).clamp(110.0, 210.0) } else { (w * 0.17).clamp(120.0, 230.0).min((w - 80.0 - gap * 3.0) / 4.4) };
-        let ph = pw * 0.72;
-        for (rank, &p) in g.ranks.iter().enumerate() {
-            let big = if rank == 0 { 1.2 } else { 1.0 };
-            let (bw, bh) = (pw * big, ph * big);
-            let (sx, sy) = if port {
-                match rank {
-                    0 => (w / 2.0 - bw / 2.0, h * 0.14),
-                    1 => (w / 2.0 - pw - gap / 2.0, h * 0.14 + ph * 1.2 + 90.0),
-                    2 => (w / 2.0 + gap / 2.0, h * 0.14 + ph * 1.2 + 110.0),
-                    _ => (w / 2.0 - pw / 2.0, h * 0.14 + ph * 2.2 + 200.0),
-                }
-            } else {
-                let total = pw * 4.2 + gap * 3.0;
-                let x0 = w / 2.0 - total / 2.0;
-                match rank {
-                    0 => (x0 + pw + gap, h * 0.2),
-                    1 => (x0, h * 0.27),
-                    2 => (x0 + pw * 2.2 + gap * 2.0, h * 0.3),
-                    _ => (x0 + pw * 3.2 + gap * 3.0, h * 0.34),
-                }
-            };
-            let d = ((g.end_t - sim::REVEAL_AT[rank]) / 0.45).clamp(0.0, 1.0);
-            if d > 0.0 {
-                l.end_panels[p] = Some(R::new(sx, sy + (1.0 - ease_back(d)) * 80.0, bw, bh));
-            }
-        }
-        let by = h - 60.0;
-        l.end_again = Btn { x: w / 2.0 + 44.0, y: by, r: 34.0 };
-        l.end_home = Btn { x: w / 2.0 - 44.0, y: by, r: 26.0 };
-    }
+    // results: stars and score on top, the finished island in the middle, the crowd below
+    let head = if port { h * 0.3 } else { h * 0.32 };
+    l.end_isle = R::new(w * 0.1, head, w * 0.8, h - head - 120.0);
+    let by = h - 64.0;
+    l.end_again = Btn { x: w / 2.0 + 44.0, y: by, r: 34.0 };
+    l.end_home = Btn { x: w / 2.0 - 44.0, y: by, r: 26.0 };
 }
 
 /* ---------------- painter ---------------- */
@@ -332,28 +316,47 @@ struct Rocket {
 #[derive(Resource, Default)]
 pub struct HudState {
     confetti: Vec<Confetto>,
-    pending_win: Option<bool>,
+    pending_end: Option<u8>,
     sparks: Vec<Spark>,
     rockets: Vec<Rocket>,
     next_rocket: f32,
-    /// (moved up?, seconds left)
-    rank_flash: Option<(bool, f32)>,
     crowd_seed: u32,
     popups: Vec<(crate::world::PopupReq, f32)>,
-    /// (island, kind, from, to, ok, age)
-    links: Vec<(usize, Link, Vec2, Vec2, bool, f32)>,
-    /// (island, where, age)
-    fears: Vec<(usize, Vec2, f32)>,
+    /// (kind, from, to, ok, age)
+    links: Vec<(Link, Vec2, Vec2, bool, f32)>,
+    /// (where, age)
+    fears: Vec<(Vec2, f32)>,
+    /// Plants that just adapted: (where, age)
+    adapts: Vec<(Vec2, f32)>,
     /// A weather change being announced: (weather, age)
     banner: Option<(Weather, f32)>,
+    /// A biome that just rose: (biome, age)
+    biome_banner: Option<(crate::eco::Biome, f32)>,
+    /// Collection cells that just lit up: (cell, age)
+    discover: Vec<(usize, f32)>,
+    /// Stars already reached during play, and when each lit up.
+    stars_lit: u8,
+    star_pop: [f32; 3],
 }
 
 impl HudState {
-    pub fn start_confetti(&mut self, win: bool) {
-        self.pending_win = Some(win);
+    pub fn start_show(&mut self, stars: u8) {
+        self.pending_end = Some(stars);
         self.next_rocket = 0.0;
         self.rockets.clear();
         self.sparks.clear();
+    }
+    pub fn reset_play(&mut self) {
+        self.stars_lit = 0;
+        self.star_pop = [0.0; 3];
+        self.discover.clear();
+        self.links.clear();
+        self.fears.clear();
+        self.adapts.clear();
+        self.popups.clear();
+        self.banner = None;
+        self.biome_banner = None;
+        self.confetti.clear();
     }
 }
 
@@ -443,39 +446,69 @@ pub fn draw_hud(
             tf.scale = Vec3::splat(s);
         }
     }
-    // rank changes flash the player's marker
-    for e in pending.ev.iter() {
-        if let Ev::Rank { up } = e {
-            state.rank_flash = Some((*up, 1.2));
-        }
-    }
-    pending.ev.retain(|e| !matches!(e, Ev::Rank { .. }));
     for e in pending.ev.iter() {
         match e {
-            Ev::Link { isl, kind, ax, ay, bx, by, ok } => state.links.push((*isl, *kind, Vec2::new(*ax, *ay), Vec2::new(*bx, *by), *ok, 0.0)),
-            Ev::Fear { isl, x, y } => state.fears.push((*isl, Vec2::new(*x, *y), 0.0)),
+            Ev::Link { kind, ax, ay, bx, by, ok, .. } => state.links.push((*kind, Vec2::new(*ax, *ay), Vec2::new(*bx, *by), *ok, 0.0)),
+            Ev::Fear { x, y, .. } => state.fears.push((Vec2::new(*x, *y), 0.0)),
+            Ev::Adapt { x, y, .. } => state.adapts.push((Vec2::new(*x, *y), 0.0)),
             Ev::Weather(w) => state.banner = Some((*w, 0.0)),
+            Ev::Biome { biome, .. } => state.biome_banner = Some((*biome, 0.0)),
+            Ev::Discover { isl, sp, .. } if *isl != sim::TITLE => {
+                state.discover.push((sp.idx(), 0.0));
+            }
             _ => {}
         }
     }
-    pending.ev.retain(|e| !matches!(e, Ev::Link { .. } | Ev::Fear { .. } | Ev::Weather(_)));
-    for l in &mut state.links {
-        l.5 += dt;
+    let discovered = pending.ev.iter().any(|e| matches!(e, Ev::Discover { isl, .. } if *isl != sim::TITLE));
+    pending.ev.retain(|e| !matches!(e, Ev::Link { .. } | Ev::Fear { .. } | Ev::Weather(_) | Ev::Adapt { .. } | Ev::Biome { .. } | Ev::Discover { .. }));
+    if discovered && session.scene == Scene::Play && session.game.as_ref().map(|g| g.t > 0.5).unwrap_or(false) {
+        pending.ev.push(Ev::Sfx(Sfx::Discover));
     }
-    state.links.retain(|l| l.5 < 1.3);
+    for l in &mut state.links {
+        l.4 += dt;
+    }
+    state.links.retain(|l| l.4 < 1.3);
     if state.links.len() > 120 {
         let n = state.links.len() - 120;
         state.links.drain(..n);
     }
     for f in &mut state.fears {
-        f.2 += dt;
+        f.1 += dt;
     }
-    state.fears.retain(|f| f.2 < 1.4);
+    state.fears.retain(|f| f.1 < 1.4);
+    for f in &mut state.adapts {
+        f.1 += dt;
+    }
+    state.adapts.retain(|f| f.1 < 1.6);
+    for f in &mut state.discover {
+        f.1 += dt;
+    }
+    state.discover.retain(|f| f.1 < 2.0);
     if let Some(b) = state.banner.as_mut() {
         b.1 += dt;
     }
     if state.banner.map(|b| b.1 > 2.6).unwrap_or(false) {
         state.banner = None;
+    }
+    if let Some(b) = state.biome_banner.as_mut() {
+        b.1 += dt;
+    }
+    if state.biome_banner.map(|b| b.1 > 2.4).unwrap_or(false) {
+        state.biome_banner = None;
+    }
+    for k in &mut state.star_pop {
+        *k += dt;
+    }
+    // reaching a star during play: a chime, the crowd, a popup
+    if let (Scene::Play, Some(gm)) = (session.scene, session.game.as_ref()) {
+        let reached = sim::STAR_AT.iter().filter(|&&s| gm.isl[0].ds >= s).count() as u8;
+        while state.stars_lit < reached {
+            let k = state.stars_lit as usize;
+            state.star_pop[k] = 0.0;
+            state.stars_lit += 1;
+            pending.ev.push(Ev::Sfx(Sfx::Star(state.stars_lit)));
+            pending.ev.push(Ev::Sfx(Sfx::CrowdWow));
+        }
     }
     let new_pops: Vec<_> = pending.popups.drain(..).map(|p| (p, 0.0)).collect();
     state.popups.extend(new_pops);
@@ -483,20 +516,14 @@ pub fn draw_hud(
         p.1 += dt;
     }
     state.popups.retain(|p| p.1 < p.0.max);
-    if let Some((_, left)) = state.rank_flash.as_mut() {
-        *left -= dt;
-    }
-    if state.rank_flash.map(|f| f.1 <= 0.0).unwrap_or(false) {
-        state.rank_flash = None;
-    }
-    if let Some(win) = state.pending_win.take() {
+    if let Some(stars) = state.pending_end.take() {
         state.confetti.clear();
         state.crowd_seed = rng.next_u32();
-        if win {
+        if stars >= 3 {
             for _ in 0..160 {
                 state.confetti.push(Confetto {
                     x: rng.f() * l.w,
-                    y: -rng.f() * l.h * 0.8,
+                    y: -rng.f() * l.h * 0.8 - l.h * 0.3,
                     vx: (rng.f() - 0.5) * 60.0,
                     vy: 70.0 + rng.f() * 120.0,
                     r: rng.f() * TAU,
@@ -516,6 +543,7 @@ pub fn draw_hud(
                     pen.layer = LAYER_TOP;
                     pen.rect(0.0, 0.0, l.w, l.h, &art, bca(pal::SLATE, 0.62));
                     pen.button(&art, l.pause_resume, bc(TEAM[0].0), pointer.hover == Some(BtnId::Resume));
+                    draw_dex(&mut pen, &art, &icons, l, gm, &state, t);
                     pen.tex(&art.icon_play, l.pause_resume.x + 3.0, l.pause_resume.y, 2.2, Color::WHITE);
                     pen.button(&art, l.pause_home, bc(pal::SLATE2), pointer.hover == Some(BtnId::PauseHome));
                     pen.tex(&art.icon_home, l.pause_home.x, l.pause_home.y, 1.6, Color::WHITE);
@@ -535,9 +563,12 @@ pub fn draw_hud(
 #[allow(clippy::too_many_arguments)]
 fn draw_title(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, settings: &Settings, pointer: &Pointer, t: f32, dice_t: f32) {
     let ay = l.logo_y + l.logo_size * 0.72;
-    for i in 0..4 {
+    // a little parade of residents hops under the logo
+    let parade = [crate::eco::Sp::Rabbit, crate::eco::Sp::Duck, crate::eco::Sp::Fox, crate::eco::Sp::Camel, crate::eco::Sp::Goat, crate::eco::Sp::Lizard];
+    for (i, sp) in parade.iter().enumerate() {
         let hop = ((t * 2.2 + i as f32 * 0.7).sin()).max(0.0) * 6.0;
-        pen.tex(&icons.pawns[i][1], l.w / 2.0 + (i as f32 - 1.5) * 42.0, ay - hop, if i == 0 { 0.95 } else { 0.8 }, Color::WHITE);
+        let tex = &icons.sp[sp.idx()];
+        pen.tex(tex, l.w / 2.0 + (i as f32 - 2.5) * 60.0, ay + 8.0 - hop, 56.0 / tex.size.x.max(1.0), Color::WHITE);
     }
     let p = l.title_play;
     let pulse = Btn { r: p.r * (1.0 + (t * 3.0).sin() * 0.025), ..p };
@@ -554,13 +585,27 @@ fn draw_title(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, settings: &Se
             pen.tex(if on { &art.sprout_on } else { &art.sprout_off }, x, r.y + r.h / 2.0, 0.9, Color::WHITE);
         }
     }
+    // best result so far: stars and score
+    if settings.best > 0.0 {
+        let stars = sim::STAR_AT.iter().filter(|&&s| settings.best >= s).count();
+        let (x0, y) = (l.w / 2.0 - pr_offset(l) - 150.0, l.title_play.y);
+        pen.tex(&art.trophy, x0 - 30.0, y + 6.0, 0.9, Color::WHITE);
+        for k in 0..3 {
+            pen.tex(if k < stars { &art.star } else { &art.star_line }, x0 + k as f32 * 20.0, y - 10.0, 0.45, if k < stars { bc(pal::GOLD) } else { bca(pal::CREAM, 0.5) });
+        }
+        pen.text(x0 + 20.0, y + 14.0, 18.0, bc(pal::CREAM), &format!("{:.0}", settings.best));
+    }
     let q = l.title_quit;
     pen.button(art, q, bc(pal::SLATE), pointer.hover == Some(BtnId::Quit));
     pen.tex(&art.icon_quit, q.x, q.y, 1.0, Color::WHITE);
 }
 
+fn pr_offset(l: &Layout) -> f32 {
+    l.title_play.r
+}
+
 #[allow(clippy::too_many_arguments)]
-fn card_icon(pen: &mut Pen, art: &Art, icons: &Icons, card: Card, x: f32, y: f32, s: f32, alpha: f32) {
+fn card_icon(pen: &mut Pen, icons: &Icons, card: Card, x: f32, y: f32, s: f32, alpha: f32) {
     let wc = Color::WHITE.with_alpha(alpha);
     let fit = |t: &Tex, w: f32| w / t.size.x.max(1.0);
     match card {
@@ -568,38 +613,111 @@ fn card_icon(pen: &mut Pen, art: &Art, icons: &Icons, card: Card, x: f32, y: f32
             let t = &icons.sp[sp.idx()];
             pen.tex(t, x, y, fit(t, 52.0 * s), wc);
         }
-        Card::Storm => {
-            pen.tex(&icons.storm, x, y - 6.0 * s, fit(&icons.storm, 52.0 * s), wc);
-            pen.tex(&art.bolt, x + 2.0 * s, y + 14.0 * s, s * 0.8, wc);
+        Card::Biome(b) => {
+            let t = &icons.biomes[b.idx()];
+            pen.tex(t, x, y, fit(t, 60.0 * s), wc);
         }
-        Card::Beetle => {
-            let t = &icons.beetle;
-            pen.tex(t, x - 9.0 * s, y + 8.0 * s, fit(t, 30.0 * s), wc);
-            pen.tex(t, x + 10.0 * s, y - 1.0 * s, fit(t, 26.0 * s), wc);
-            pen.tex(t, x - 2.0 * s, y - 12.0 * s, fit(t, 22.0 * s), wc);
-        }
-        Card::Shield => pen.tex(&art.shield, x, y + 4.0 * s, s * 1.2, wc),
     }
 }
 
-fn portrait_center(l: &Layout, i: usize) -> Vec2 {
-    l.p[i].center()
+/// Colour of a biome's card.
+fn biome_col(b: crate::eco::Biome) -> u32 {
+    use crate::eco::Biome;
+    match b {
+        Biome::Volcano => 0x5a2f2a,
+        Biome::Lake => 0x1f5f86,
+        Biome::Peak => 0x5d6f80,
+        Biome::Desert => 0x9a5e22,
+    }
+}
+
+/// The collection: every species (and biome) the island has had. Thriving ones get a gold ring.
+fn draw_dex(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game, state: &HudState, t: f32) {
+    let d = l.dex;
+    let isl = &gm.isl[0];
+    pen.rrect(art, d.x, d.y + 3.0, d.w, d.h, 12.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.3)), None);
+    pen.rrect(art, d.x, d.y, d.w, d.h, 12.0, Some(bca(pal::SLATE, 0.92)), Some(bca(pal::CREAM, 0.15)));
+    let mut thriving = [false; crate::eco::N];
+    let mut present = [false; crate::eco::N];
+    for e in isl.ents.iter().filter(|e| e.dying == 0.0) {
+        present[e.sp.idx()] = true;
+        if e.h >= sim::THRIVE {
+            thriving[e.sp.idx()] = true;
+        }
+    }
+    for i in 0..DEX_CELLS {
+        let r = dex_cell(l, i);
+        let c = r.center();
+        let pop = state.discover.iter().find(|f| f.0 == i).map(|f| f.1);
+        let (tex, seen, thr, here) = if i < crate::eco::N {
+            (&icons.sp[i], isl.seen[i], thriving[i], present[i])
+        } else {
+            let b = crate::eco::BIOMES[i - crate::eco::N];
+            let has = isl.biomes.iter().any(|x| x.0 == b);
+            (&icons.biomes[b.idx()], has, false, has)
+        };
+        if thr {
+            pen.circle(art, c.x, c.y, r.w * 0.44, bca(pal::GOLD, 0.28 + (t * 3.0 + i as f32).sin() * 0.06));
+        } else {
+            pen.circle(art, c.x, c.y, r.w * 0.44, bca(pal::CREAM, if here { 0.12 } else { 0.06 }));
+        }
+        if i >= crate::eco::N {
+            // places get a gold rim so they read apart from creatures
+            pen.ring(art, c.x, c.y, r.w * 0.45, bca(pal::GOLD, if here { 0.9 } else { 0.25 }));
+        }
+        let mut s = r.w * 0.84 / tex.size.x.max(1.0);
+        if let Some(age) = pop {
+            s *= 1.0 + (1.0 - (age / 0.5).min(1.0)) * 0.6 * ease_back((age / 0.3).min(1.0));
+            pen.ring(art, c.x, c.y, r.w * (0.4 + age * 0.5), bca(pal::GOLD, (1.0 - age / 2.0).max(0.0)));
+        }
+        let col = if !seen {
+            Color::srgba(0.03, 0.05, 0.07, 0.8)
+        } else if here {
+            Color::WHITE
+        } else {
+            Color::WHITE.with_alpha(0.4)
+        };
+        pen.tex(tex, c.x, c.y, s, col);
+    }
+}
+
+/// Stars along the top: how far the island is from one, two and three stars.
+fn draw_star_bar(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, state: &HudState, t: f32) {
+    let rc = l.race;
+    let slate = bc(pal::SLATE);
+    let top = sim::STAR_AT[2];
+    pen.rrect(art, rc.x, rc.y - 4.0, rc.w, 14.0, 7.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.3)), None);
+    pen.rrect(art, rc.x, rc.y - 7.0, rc.w, 14.0, 7.0, Some(slate), Some(bca(pal::CREAM, 0.15)));
+    let k = (gm.isl[0].ds / top).clamp(0.0, 1.0);
+    let grd = if state.stars_lit >= 3 { bc(pal::GOLD) } else { bca(0x7fc76f, 0.95) };
+    pen.rrect(art, rc.x + 3.0, rc.y - 3.0, ((rc.w - 6.0) * k).max(8.0), 6.0, 3.0, Some(grd), None);
+    // the leading edge sparkles while it climbs
+    let head = rc.x + 3.0 + (rc.w - 6.0) * k;
+    pen.tex(&art.spark, head, rc.y, 1.0 + (t * 6.0).sin() * 0.2, bca(pal::CREAM, 0.9));
+    for (i, &at) in sim::STAR_AT.iter().enumerate() {
+        let x = rc.x + (rc.w - 6.0) * (at / top) + 3.0 - if i == 2 { 2.0 } else { 0.0 };
+        let lit = (i as u8) < state.stars_lit;
+        let age = state.star_pop[i];
+        let pop = if lit && age < 0.6 { 1.0 + (1.0 - age / 0.6) * 0.9 * ease_back((age / 0.25).min(1.0)) } else { 1.0 };
+        pen.circle(art, x, rc.y, 13.0, slate);
+        if lit {
+            if age < 1.2 {
+                pen.ring(art, x, rc.y, 12.0 + age * 40.0, bca(pal::GOLD, 1.0 - age / 1.2));
+            }
+            pen.tex(&art.star, x, rc.y, 0.62 * pop, bc(pal::GOLD));
+        } else {
+            pen.tex(&art.star_line, x, rc.y, 0.62, bca(pal::CREAM, 0.55));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, state: &HudState, t: f32) {
     let (w, h) = (l.w, l.h);
     let slate = bc(pal::SLATE);
-    let me = &gm.players[0];
     draw_weather_fx(pen, g, art, l, gm, t);
     draw_world_overlays(pen, g, art, icons, l, gm, view, pointer, state, t);
 
-    if gm.view != 0 {
-        let a = l.isle;
-        pen.rrect(art, a.x + 4.0, a.y + 4.0, a.w - 8.0, a.h - 8.0, 22.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
-        pen.rrect(art, a.x + 6.0, a.y + 6.0, a.w - 12.0, a.h - 12.0, 20.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
-        pen.tex(&icons.pawns[gm.view][1], a.x + 34.0, a.y + 38.0, 1.0, Color::WHITE);
-    }
     if gm.fade > 0.0 {
         let a = l.isle;
         pen.rect(a.x, a.y, a.w, a.h, art, bca(pal::SEA, gm.fade));
@@ -608,7 +726,7 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
         pen.rect(0.0, 0.0, w, h, art, Color::srgba(1.0, 1.0, 0.92, (gm.flash * 1.6).min(1.0)));
     }
     if gm.alert > 0.0 {
-        let c = bca(pal::RED, gm.alert * if gm.view != 0 { 0.4 } else { 0.28 });
+        let c = bca(pal::RED, gm.alert * 0.28);
         let b = 14.0;
         pen.rect(0.0, 0.0, w, b, art, c);
         pen.rect(0.0, h - b, w, b, art, c);
@@ -619,13 +737,19 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     // sun timer
     let tm = l.timer;
     let left = (1.0 - gm.t / DUR).clamp(0.0, 1.0);
-    pen.button(art, tm, slate, false);
-    let warm = if left < 0.12 && (t * 8.0).sin() > 0.0 { bc(pal::RED) } else { bc(pal::GOLD) };
+    let hurry = left < 0.1;
+    let pul = if hurry { 1.0 + (t * 8.0).sin().max(0.0) * 0.12 } else { 1.0 };
+    pen.button(art, Btn { r: tm.r * pul, ..tm }, slate, false);
+    let warm = if hurry && (t * 8.0).sin() > 0.0 { bc(pal::RED) } else { bc(pal::GOLD) };
     arc(g, w, h, tm.c(), tm.r - 7.0, PI / 2.0, left, warm);
     arc(g, w, h, tm.c(), tm.r - 10.0, PI / 2.0, left, warm);
     let sa = -PI / 2.0 - left * TAU;
     let sun = tm.c() + Vec2::new(sa.cos(), -sa.sin()) * (tm.r - 5.0);
     pen.circle(art, sun.x, sun.y, 4.5, bc(0xffe08a));
+    if hurry {
+        let secs = (DUR - gm.t).ceil().max(0.0);
+        pen.text(tm.x, tm.y + tm.r + 14.0, 16.0, bc(pal::RED), &format!("{secs:.0}"));
+    }
 
     // weather now, and what comes next when it is close
     let wi = |w: Weather| match w {
@@ -649,97 +773,24 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
         pen.circle(art, c.x, c.y, 34.0 * pop, bca(pal::SLATE, 0.85 * a));
         pen.tex(&art.weather[wi(w)], c.x, c.y, 1.7 * pop, Color::WHITE.with_alpha(a));
     }
+    if let Some((b, age)) = state.biome_banner {
+        let pop = if age < 0.35 { ease_back(age / 0.35) } else { 1.0 };
+        let a = if age > 1.8 { (2.4 - age) / 0.6 } else { 1.0 };
+        let c = Vec2::new(l.isle.x + l.isle.w / 2.0, l.isle.y + 70.0);
+        pen.circle(art, c.x, c.y, 50.0 * pop, bca(biome_col(b), 0.9 * a));
+        pen.ring(art, c.x, c.y, 50.0 * pop, bca(pal::GOLD, a));
+        let tex = &icons.biomes[b.idx()];
+        pen.tex(tex, c.x, c.y + 4.0, 80.0 / tex.size.x.max(1.0) * pop, Color::WHITE.with_alpha(a));
+    }
 
-    // race to the flag
-    let rc = l.race;
-    pen.rrect(art, rc.x, rc.y - 4.0, rc.w, 14.0, 7.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.3)), None);
-    pen.rrect(art, rc.x, rc.y - 7.0, rc.w, 14.0, 7.0, Some(slate), Some(bca(pal::CREAM, 0.15)));
-    for i in 1..4 {
-        pen.circle(art, rc.x + rc.w * i as f32 / 4.0, rc.y, 2.0, bca(pal::CREAM, 0.25));
-    }
-    let kme = (gm.isl[0].ds / sim::GOAL).clamp(0.0, 1.0);
-    pen.rrect(art, rc.x + 3.0, rc.y - 3.0, ((rc.w - 6.0) * kme).max(8.0), 6.0, 3.0, Some(bca(TEAM[0].0, 0.7)), None);
-    pen.tex(&art.trophy, rc.x + rc.w + 12.0, rc.y + 4.0, 1.0, Color::WHITE);
-    for i in [1usize, 2, 3, 0] {
-        let k = (gm.isl[i].ds / sim::GOAL).clamp(0.0, 1.0);
-        let x = rc.x + 8.0 + (rc.w - 16.0) * k;
-        let y = rc.y + if i == 0 { -2.0 } else { (i as f32 - 2.0) * 4.0 - 2.0 };
-        if i == 0 {
-            if let Some((up, left)) = state.rank_flash {
-                let k = 1.0 - left / 1.2;
-                pen.ring(art, x, y, 12.0 + k * 26.0, bca(if up { pal::GREEN } else { pal::RED }, 1.0 - k));
-                pen.ring(art, x, y, 10.0 + k * 16.0, bca(if up { pal::GREEN } else { pal::RED }, 1.0 - k));
-            }
-            pen.circle(art, x, y, 15.0 + (t * 3.0).sin(), bca(pal::GOLD, 0.35));
-        }
-        pen.tex(&icons.pawns[i][1], x, y, if i == 0 { 0.62 } else { 0.5 }, Color::WHITE);
-    }
+    draw_star_bar(pen, art, l, gm, state, t);
     pen.button(art, l.pause, slate, pointer.hover == Some(BtnId::Pause));
     pen.tex(&art.icon_pause, l.pause.x, l.pause.y, 1.2, Color::WHITE);
-
-    // portraits: live cameras show the islands; decorate them on the top layer
-    let aiming = gm.selected().map(|c| c.is_attack()).unwrap_or(false);
-    let old = pen.layer;
-    pen.layer = LAYER_TOP;
-    for i in 0..4 {
-        let r = l.p[i];
-        let viewing = gm.view == i;
-        let hot = aiming && i != 0;
-        pen.sliced(&art.rrect_mask, r.x, r.y, r.w, r.h, 12.0, bc(pal::SEA));
-        if hot {
-            pen.rrect(art, r.x, r.y, r.w, r.h, 12.0, Some(bca(pal::RED, 0.14 + (t * 6.0).sin() * 0.08)), None);
-        }
-        let k = (gm.isl[i].ds / sim::GOAL).clamp(0.0, 1.0);
-        pen.rect(r.x + 8.0, r.y + r.h - 10.0, r.w - 16.0, 5.0, art, bca(pal::SLATE, 0.7));
-        pen.rect(r.x + 8.0, r.y + r.h - 10.0, (r.w - 16.0) * k, 5.0, art, bc(TEAM[i].0));
-        let threatened = gm.isl[i].threatened();
-        let edge = if threatened && (t * 10.0).sin() > 0.0 { bc(pal::RED) } else if viewing { bc(pal::GOLD) } else { slate };
-        pen.rrect(art, r.x, r.y, r.w, r.h, 12.0, None, Some(edge));
-        pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 10.5, None, Some(edge));
-        let mood = if gm.isl[i].hit_t > 0.0 { 0 } else { 1 };
-        let ar = (r.h * 0.22).clamp(10.0, 18.0);
-        pen.tex(&icons.pawns[i][mood], r.x + ar + 4.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
-        if gm.isl[i].shield > 0.0 {
-            pen.tex(&art.shield, r.x + r.w - ar - 4.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
-        }
-        if gm.isl[i].whale.as_ref().map(|w| w.active()).unwrap_or(false) {
-            pen.tex(&icons.whale, r.x + r.w - 26.0, r.y + r.h - 20.0, 0.34, Color::WHITE);
-        }
-        if hot {
-            let c = r.center();
-            let lift = if pointer.hover_portrait == Some(i) { 1.15 } else { 1.0 };
-            pen.tex(&art.crosshair, c.x, c.y, r.h * 0.4 / 32.0 * (1.0 + (t * 6.0).sin() * 0.08) * lift, Color::WHITE);
-        }
-    }
-    // attacks in flight
-    for f in &gm.fly {
-        let k = ease_io((f.t / f.dur).clamp(0.0, 1.0));
-        let a = portrait_center(l, f.from);
-        let b = if gm.view == f.to {
-            match f.tile {
-                Some(tl) => {
-                    let tile = &gm.isl[f.to].map.tiles[tl];
-                    view.to_screen(tile.x, tile.y - 60.0)
-                }
-                None => Vec2::new(l.isle.x + l.isle.w / 2.0, l.isle.y + l.isle.h * 0.35),
-            }
-        } else {
-            portrait_center(l, f.to)
-        };
-        let path = |kk: f32| Vec2::new(lerp(a.x, b.x, kk), lerp(a.y, b.y, kk) - (kk * PI).sin() * 90.0);
-        for j in (0..12).step_by(2) {
-            let (k0, k1) = (k * j as f32 / 12.0, k * (j as f32 + 1.0) / 12.0);
-            g.line_2d(to_screen(w, h, path(k0)), to_screen(w, h, path(k1)), bca(pal::CREAM, 0.6));
-        }
-        let p = path(k);
-        card_icon(pen, art, icons, f.card, p.x, p.y, 0.9, 1.0);
-        pen.tex(&icons.pawns[f.from][1], p.x - 18.0, p.y - 14.0, 0.5, Color::WHITE);
-    }
-    pen.layer = old;
+    draw_dex(pen, art, icons, l, gm, state, t);
 
     // hand
     for i in 0..4 {
-        draw_card(pen, g, art, icons, l, gm, pointer, i);
+        draw_card(pen, g, art, icons, l, gm, pointer, i, t);
     }
     // combo meter
     if gm.combo >= 2 && gm.t - gm.last_place < 6.0 {
@@ -754,24 +805,18 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     let rb = l.reroll;
     pen.button(art, rb, slate, pointer.hover == Some(BtnId::Reroll));
     pen.tex(&art.icon_reroll, rb.x, rb.y, rb.r / 15.0 * 1.05, Color::WHITE);
-    if me.rr > 0.0 {
-        arc(g, w, h, rb.c(), rb.r + 4.0, PI / 2.0, me.rr / REROLL_CD, bca(pal::CREAM, 0.5));
+    if gm.rr > 0.0 {
+        arc(g, w, h, rb.c(), rb.r + 4.0, PI / 2.0, gm.rr / REROLL_CD, bca(pal::CREAM, 0.5));
     }
     let sb = l.shovel;
     pen.button(art, sb, if gm.shovel { bc(pal::GOLD) } else { slate }, pointer.hover == Some(BtnId::Shovel));
     pen.tex(&art.icon_shovel, sb.x, sb.y, sb.r / 15.0 * 1.05, Color::WHITE);
-    if gm.view != 0 {
-        let hb = l.home;
-        let urgent = gm.alert > 0.0 || gm.isl[0].has_threats();
-        let pul = if urgent { 1.0 + (t * 8.0).sin() * 0.08 } else { 1.0 };
-        pen.button(art, Btn { r: hb.r * pul, ..hb }, if gm.isl[0].has_threats() { bc(pal::RED) } else { slate }, pointer.hover == Some(BtnId::Home));
-        pen.tex(&art.icon_home, hb.x, hb.y, hb.r / 15.0, Color::WHITE);
-    }
+    let old = pen.layer;
     if let Some(d) = pointer.drag.as_ref() {
         if d.moved {
-            if let Some(c) = me.hand[d.si].card {
+            if let Some(c) = gm.hand[d.si].card {
                 pen.layer = LAYER_TOP;
-                card_icon(pen, art, icons, c, pointer.pos.x, pointer.pos.y - 26.0, 1.1, 0.9);
+                card_icon(pen, icons, c, pointer.pos.x, pointer.pos.y - 26.0, 1.1, 0.9);
                 pen.layer = old;
             }
         }
@@ -780,8 +825,8 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, pointer: &Pointer, i: usize) {
-    let s = &gm.players[0].hand[i];
+fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, pointer: &Pointer, i: usize, t: f32) {
+    let s = &gm.hand[i];
     let r = l.cards[i];
     let sel = gm.sel == Some(i);
     let hov = pointer.hover_card == Some(i) && s.card.is_some();
@@ -799,36 +844,40 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     let (w, h) = (r.w * flip, r.h);
     let x0 = cx - w / 2.0;
     let y0 = cy - h / 2.0;
+    let special = matches!(card, Card::Biome(_));
+    if special {
+        // biome cards glow
+        let glow = 0.35 + (t * 4.0).sin() * 0.15;
+        pen.rrect(art, x0 - 5.0, y0 - 5.0, w + 10.0, h + 10.0, 14.0, Some(bca(pal::GOLD, glow)), None);
+    }
     pen.rrect(art, x0 + 2.0, y0 + 6.0 - lift * 0.4, w, h, 10.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.35)), None);
     let fill = match card {
-        Card::Storm | Card::Beetle => bc(0x3a2f45),
-        Card::Shield => bc(0xcfe3ea),
+        Card::Biome(b) => bc(biome_col(b)),
         _ => bc(0xefe6d2),
     };
-    pen.rrect(art, x0, y0, w, h, 10.0, Some(fill), Some(if sel { bc(pal::GOLD) } else { bc(pal::SLATE) }));
-    if sel {
-        pen.rrect(art, x0 + 1.5, y0 + 1.5, w - 3.0, h - 3.0, 8.5, None, Some(bc(pal::GOLD)));
+    let edge = if sel || special { bc(pal::GOLD) } else { bc(pal::SLATE) };
+    pen.rrect(art, x0, y0, w, h, 10.0, Some(fill), Some(edge));
+    if sel || special {
+        pen.rrect(art, x0 + 1.5, y0 + 1.5, w - 3.0, h - 3.0, 8.5, None, Some(edge));
     }
     if let Card::Nature(sp) = card {
         let band = if def(sp).plant { bca(0x5a9a3c, 0.28) } else { bca(0xd9853a, 0.28) };
         pen.rect(x0 + 2.5, y0 + h * 0.6, (w - 5.0).max(0.0), h * 0.28, art, band);
     }
     if flip > 0.3 {
-        card_icon(pen, art, icons, card, cx, cy - h * 0.06, r.w / 64.0 * flip.min(1.0), 1.0);
+        card_icon(pen, icons, card, cx, cy - h * 0.06, r.w / 64.0 * flip.min(1.0), 1.0);
         let (gx, gy) = (x0 + 12.0, y0 + 12.0);
         match card {
             Card::Nature(sp) => {
                 pen.tex(if def(sp).plant { &art.glyph_leaf } else { &art.glyph_paw }, gx, gy, 1.0, Color::WHITE);
-                let terr = def(sp).terr;
-                let chips: Vec<u32> = if terr.contains(&Terr::Sand) && terr.len() > 1 {
-                    vec![0x5f9a3a, 0xe3c07e]
-                } else {
-                    vec![match terr[0] {
-                        Terr::Pond => 0x3d9ec2,
-                        Terr::Sand => 0xe3c07e,
-                        _ => 0x5f9a3a,
-                    }]
-                };
+                // which ground it lives on
+                let mut chips: Vec<u32> = vec![];
+                for tt in def(sp).terr {
+                    let c = terr_chip(*tt);
+                    if !chips.contains(&c) {
+                        chips.push(c);
+                    }
+                }
                 let n = chips.len() as f32;
                 for (j, c) in chips.iter().enumerate() {
                     let x = cx + (j as f32 - (n - 1.0) / 2.0) * 13.0;
@@ -837,9 +886,27 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
                     pen.tex(&art.hex, x, y, 5.3 / HS, bc(*c));
                 }
             }
-            Card::Storm | Card::Beetle => pen.tex(&art.glyph_target, gx, gy, 1.0, Color::WHITE),
-            Card::Shield => {}
+            Card::Biome(_) => {
+                for k in 0..3 {
+                    let a = t * 2.0 + k as f32 * 2.1;
+                    pen.tex(&art.spark, cx + a.cos() * w * 0.34, cy + a.sin() * h * 0.3, 0.9, bca(pal::GOLD, 0.8));
+                }
+            }
         }
+    }
+}
+
+/// Swatch colour for a terrain on a card.
+fn terr_chip(t: Terr) -> u32 {
+    match t {
+        Terr::Pond => 0x3d9ec2,
+        Terr::Lake => 0x2a6ea0,
+        Terr::Sand => 0xe3c07e,
+        Terr::Grass | Terr::Mead => 0x5f9a3a,
+        Terr::Rock => 0x9aa0a3,
+        Terr::Ash | Terr::Volcano => 0x5b5357,
+        Terr::Snow | Terr::Peak => 0xf2f5f7,
+        Terr::Dune => 0xe0a050,
     }
 }
 
@@ -852,7 +919,6 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game,
     let press = if cyc < 0.15 { cyc / 0.15 } else if cyc > 0.8 { (cyc - 0.8) / 0.2 } else { 0.0 };
     let old = pen.layer;
     pen.layer = LAYER_TOP;
-    let me = &gm.players[0];
     let hand = |pen: &mut Pen, p: Vec2, press: f32| {
         if press > 0.0 {
             pen.ring(art, p.x, p.y, 10.0 + press * 12.0, bca(pal::CREAM, 0.9));
@@ -860,42 +926,44 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game,
         pen.tex(&art.hand, p.x, p.y, 1.0, Color::WHITE);
     };
     let card_pt = |si: usize| Vec2::new(l.cards[si].x + l.cards[si].w / 2.0, l.cards[si].y + l.cards[si].h * 0.45);
-    if !settings.tut_place && gm.placed == 0 && gm.view == 0 && gm.sel.is_none() {
-        if let Some(si) = me.hand.iter().position(|s| matches!(s.card, Some(Card::Nature(_)))) {
-            if let Some(Card::Nature(sp)) = me.hand[si].card {
+    let drag_to = |pen: &mut Pen, si: usize, card: Card, b: Vec2| {
+        let a = card_pt(si);
+        let k = ease_io(((cyc - 0.2) / 0.55).clamp(0.0, 1.0));
+        let p = a.lerp(b, k);
+        if cyc > 0.15 && cyc < 0.8 {
+            card_icon(pen, icons, card, p.x, p.y - 22.0, 1.0, 0.7);
+        }
+        hand(pen, p, press);
+    };
+    let biome_si = gm.hand.iter().position(|s| matches!(s.card, Some(Card::Biome(_))));
+    if !settings.tut_place && gm.placed == 0 && gm.sel.is_none() {
+        if let Some(si) = gm.hand.iter().position(|s| matches!(s.card, Some(Card::Nature(_)))) {
+            if let Some(Card::Nature(sp)) = gm.hand[si].card {
                 if let Some(best) = gm.hints(sp).into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) {
                     let tl = &gm.isl[0].map.tiles[best.0];
-                    let a = card_pt(si);
-                    let b = view.to_screen(tl.x, tl.y);
-                    let k = ease_io(((cyc - 0.2) / 0.55).clamp(0.0, 1.0));
-                    let p = a.lerp(b, k);
-                    if cyc > 0.15 && cyc < 0.8 {
-                        card_icon(pen, art, icons, Card::Nature(sp), p.x, p.y - 22.0, 1.0, 0.7);
-                    }
-                    hand(pen, p, press);
+                    drag_to(pen, si, Card::Nature(sp), view.to_screen(tl.x, tl.y));
                 }
             }
         }
-    } else if !settings.tut_attack && gm.attacks == 0 {
-        if let Some(si) = me.hand.iter().position(|s| s.card.map(|c| c.is_attack()).unwrap_or(false)) {
-            let tgt = (1..4).max_by(|&a, &b| gm.isl[a].score.partial_cmp(&gm.isl[b].score).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(1);
-            let a = card_pt(si);
-            let b = portrait_center(l, tgt);
-            hand(pen, a.lerp(b, ease_io(((cyc - 0.2) / 0.55).clamp(0.0, 1.0))), press);
+    } else if let (false, 0, Some(si), None) = (settings.tut_biome, gm.biomes_placed, biome_si, gm.sel) {
+        let isl = &gm.isl[0];
+        let spot = (0..isl.map.tiles.len()).filter(|&t| isl.can_biome(t)).max_by_key(|&t| {
+            let tl = &isl.map.tiles[t];
+            tl.n1.len() as i32 * 2 - tl.n1.iter().filter(|&&u| isl.map.tiles[u].occ.is_some()).count() as i32 * 3
+        });
+        if let (Some(tile), Some(card)) = (spot, gm.hand[si].card) {
+            let tl = &isl.map.tiles[tile];
+            drag_to(pen, si, card, view.to_screen(tl.x, tl.y));
         }
     } else if !settings.tut_defend && gm.isl[0].has_threats() {
-        if gm.view != 0 {
-            hand(pen, l.home.c() + Vec2::new(6.0, 6.0), (t * 2.0) % 1.0);
+        let isl = &gm.isl[0];
+        let p = if let Some(s) = isl.storms.iter().find(|s| s.active() && s.t > 0.8) {
+            Some(view.to_screen(s.cx, s.cy))
         } else {
-            let isl = &gm.isl[0];
-            let p = if let Some(s) = isl.storms.iter().find(|s| s.active() && s.t > 0.8) {
-                Some(view.to_screen(s.cx, s.cy))
-            } else {
-                isl.beetles.iter().find(|b| b.active()).map(|b| view.to_screen(b.x, b.y - 5.0))
-            };
-            if let Some(p) = p {
-                hand(pen, p + Vec2::new(4.0, 6.0), (t * 3.0) % 1.0);
-            }
+            isl.beetles.iter().find(|b| b.active()).map(|b| view.to_screen(b.x, b.y - 5.0))
+        };
+        if let Some(p) = p {
+            hand(pen, p + Vec2::new(4.0, 6.0), (t * 3.0) % 1.0);
         }
     }
     pen.layer = old;
@@ -904,17 +972,17 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game,
 /* ---------------- results show ---------------- */
 
 /// How excited the crowd is at this point of the show (0..1).
-fn excitement(end_t: f32) -> f32 {
+fn excitement(end_t: f32, stars: u8) -> f32 {
     let mut e: f32 = 0.15;
-    for (rank, &at) in sim::REVEAL_AT.iter().enumerate() {
+    for (k, &at) in sim::STAR_REVEAL.iter().enumerate() {
         let since = end_t - at;
-        if since >= 0.0 {
-            let peak = if rank == 0 { 1.0 } else { 0.55 };
-            let sustain = if rank == 0 { 0.65 } else { 0.25 };
+        if since >= 0.0 && (k as u8) < stars {
+            let peak = [0.5, 0.75, 1.0][k];
+            let sustain = [0.25, 0.4, 0.7][k];
             e = e.max(sustain + (peak - sustain) * (-since * 1.5).exp());
         }
     }
-    if end_t > 0.2 && end_t < sim::REVEAL_AT[3] {
+    if end_t > 0.2 && end_t < sim::STAR_REVEAL[0] {
         e = e.max(0.3);
     }
     e
@@ -922,6 +990,9 @@ fn excitement(end_t: f32) -> f32 {
 
 fn update_show(state: &mut HudState, gm: &Game, l: &Layout, rng: &mut Rng, dt: f32, pending: &mut Pending) {
     for c in &mut state.confetti {
+        if gm.end_t < sim::STAR_REVEAL[2] {
+            continue;
+        }
         c.x += c.vx * dt;
         c.y += c.vy * dt;
         c.r += c.vr * dt;
@@ -930,13 +1001,13 @@ fn update_show(state: &mut HudState, gm: &Game, l: &Layout, rng: &mut Rng, dt: f
             c.x = rng.f() * l.w;
         }
     }
-    // fireworks after the winner is revealed
-    let since = gm.end_t - sim::REVEAL_AT[0];
-    let win = gm.ranks.first() == Some(&0);
-    if since > 0.0 && since < if win { 14.0 } else { 6.0 } {
+    // fireworks for two stars and up
+    let since = gm.end_t - sim::STAR_REVEAL[1];
+    let big = gm.stars >= 3;
+    if gm.stars >= 2 && since > 0.0 && since < if big { 14.0 } else { 5.0 } {
         state.next_rocket -= dt;
         if state.next_rocket <= 0.0 {
-            state.next_rocket = if win { 0.35 } else { 0.8 } + rng.f() * 0.4;
+            state.next_rocket = if big { 0.35 } else { 0.8 } + rng.f() * 0.4;
             state.rockets.push(Rocket { x: l.w * (0.12 + rng.f() * 0.76), y: l.h + 10.0, ty: l.h * (0.1 + rng.f() * 0.3), vy: -l.h * 1.1, c: *rng.pick(&[pal::GOLD, TEAM[0].0, TEAM[1].0, 0x5fb04a, TEAM[3].0, 0xffffff]) });
         }
     }
@@ -973,11 +1044,13 @@ fn update_show(state: &mut HudState, gm: &Game, l: &Layout, rng: &mut Rng, dt: f
 fn draw_end(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game, pointer: &Pointer, state: &HudState, t: f32) {
     let et = gm.end_t;
     let k = (et / 0.6).clamp(0.0, 1.0);
-    // the dim sits under the island panels (they are live cameras)
-    pen.rect(0.0, 0.0, l.w, l.h, art, bca(0x0d161c, 0.72 * k));
+    let slate = bc(pal::SLATE);
+    // a dark stage above the island for the verdict
+    let head = l.end_isle.y;
+    pen.rect(0.0, 0.0, l.w, l.h, art, bca(0x0d161c, 0.3 * k));
+    pen.rect(0.0, 0.0, l.w, head - 6.0, art, bca(0x0d161c, 0.55 * k));
     let old = pen.layer;
     pen.layer = LAYER_TOP;
-    // fireworks
     for r in &state.rockets {
         pen.circle(art, r.x, r.y, 2.5, bc(0xfff1c0));
         pen.circle(art, r.x, r.y + 10.0, 1.6, bca(0xfff1c0, 0.5));
@@ -986,38 +1059,62 @@ fn draw_end(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout, gm: &Game, poin
         let a = 1.0 - s.life / s.max;
         pen.tex(&art.spark, s.x, s.y, 0.9, bca(s.c, a));
     }
-    // drumroll: a pulsing question over the empty stage
-    if et > 0.2 && et < sim::REVEAL_AT[3] {
-        let pul = 1.0 + (et * 18.0).sin() * 0.06;
-        pen.text(l.w / 2.0, l.h * 0.4, 70.0 * pul, bca(pal::CREAM, 0.85), "?");
-    }
-    let slate = bc(pal::SLATE);
-    for (rank, &p) in gm.ranks.iter().enumerate() {
-        let Some(r) = l.end_panels.get(p).copied().flatten() else { continue };
-        pen.sliced(&art.rrect_mask, r.x, r.y, r.w, r.h, 14.0, bc(0x0d161c).mix(&bc(pal::SEA), 1.0 - 0.72 * k));
-        let edge = if rank == 0 { bc(pal::GOLD) } else { slate };
-        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, None, Some(edge));
-        pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 12.5, None, Some(edge));
-        let pl = [52.0, 38.0, 28.0, 20.0][rank];
-        let plc = [pal::GOLD, 0xc9ced6, 0xc8875a, 0x6b7a80][rank];
-        pen.rrect(art, r.x + r.w * 0.12, r.y + r.h + 8.0, r.w * 0.76, pl, 6.0, Some(bc(plc)), None);
-        pen.rect(r.x + r.w * 0.12 + 3.0, r.y + r.h + 8.0 + pl - 6.0, r.w * 0.76 - 6.0, 4.0, art, bca(pal::SLATE, 0.25));
-        // score counts up after the reveal
-        let since = (et - sim::REVEAL_AT[rank]).max(0.0);
-        let shown = gm.isl[p].score * (since / 0.9).clamp(0.0, 1.0);
-        pen.text(r.x + r.w / 2.0, r.y + r.h + 8.0 + pl / 2.0, (pl * 0.55).clamp(14.0, 26.0), if rank == 0 { slate } else { bc(pal::CREAM) }, &format!("{shown:.0}"));
-        let mood = if rank == 0 { 2 } else if rank == 3 { 0 } else { 1 };
-        let hop = if rank == 0 { ((t * 5.0).sin()).max(0.0) * 8.0 } else { 0.0 };
-        pen.tex(&icons.pawns[p][mood], r.x + r.w / 2.0, r.y - 12.0 - hop, if rank == 0 { 1.25 } else { 0.95 }, Color::WHITE);
-        if rank == 0 {
-            pen.tex(&art.crown, r.x + r.w / 2.0, r.y - 50.0 - hop + (t * 3.0).sin() * 2.0, 1.0, Color::WHITE);
+    // three stars, judged one by one
+    let cx = l.w / 2.0;
+    let sy = head * 0.36;
+    let big = (head * 0.28).clamp(38.0, 70.0);
+    for i in 0..3 {
+        let x = cx + (i as f32 - 1.0) * big * 1.35;
+        let y = sy + if i == 1 { -big * 0.18 } else { 0.0 };
+        let since = et - sim::STAR_REVEAL[i];
+        let earned = (i as u8) < gm.stars;
+        pen.tex(&art.star, x, y + 3.0, big / 34.0, bca(pal::SLATE, 0.9));
+        pen.tex(&art.star_line, x, y, big / 34.0, bca(pal::CREAM, 0.35));
+        if since > 0.0 && earned {
+            let pop = ease_back((since / 0.35).min(1.0));
+            let wob = if since < 1.0 { (since * 20.0).sin() * 0.1 * (1.0 - since) } else { 0.0 };
+            pen.tex_full(&art.star, x, y, Vec2::splat(big / 34.0 * pop.max(0.05)), wob, false, bc(pal::GOLD));
+            if since < 1.0 {
+                pen.ring(art, x, y, big * (0.5 + since * 1.2), bca(pal::GOLD, 1.0 - since));
+            }
+            let tw = (t * 3.0 + i as f32).sin() * 0.5 + 0.5;
+            pen.tex(&art.spark, x + big * 0.3, y - big * 0.3, 1.2 * tw, Color::WHITE.with_alpha(tw));
+        } else if since > 0.0 && gm.stars == i as u8 && since < 0.8 {
+            // the star that was not earned shakes its head
+            let shake = (since * 40.0).sin() * 6.0 * (1.0 - since / 0.8);
+            pen.tex(&art.star_line, x + shake, y, big / 34.0, bca(pal::RED, 1.0 - since / 0.8));
         }
-        let kk = (gm.isl[p].score / sim::GOAL).clamp(0.0, 1.0) * (since / 0.9).clamp(0.0, 1.0);
-        pen.rrect(art, r.x + 10.0, r.y + r.h - 16.0, r.w - 20.0, 8.0, 4.0, Some(bca(pal::SLATE, 0.8)), None);
-        pen.rrect(art, r.x + 10.0, r.y + r.h - 16.0, ((r.w - 20.0) * kk).max(8.0), 8.0, 4.0, Some(bc(TEAM[p].0)), None);
+    }
+    // the score counts up during the drumroll
+    let count = ((et - 0.2) / (sim::STAR_REVEAL[0] - 0.4)).clamp(0.0, 1.0);
+    let shown = gm.final_score * ease_io(count);
+    let ty = sy + big * 0.95;
+    let pul = if count < 1.0 { 1.0 + (et * 18.0).sin() * 0.03 } else { 1.0 };
+    pen.text(cx, ty, 34.0 * pul, bc(pal::CREAM), &format!("{shown:.0}"));
+    // new best
+    if gm.new_best && et > 4.6 {
+        let a = ((et - 4.6) / 0.3).min(1.0);
+        let pop = ease_back(a);
+        let bx = cx + big * 2.6;
+        pen.tex(&art.crown, bx, ty - 18.0 + (t * 3.0).sin() * 2.0, 0.9 * pop, Color::WHITE.with_alpha(a));
+        pen.tex(&art.trophy, bx, ty + 10.0, 0.9 * pop, Color::WHITE.with_alpha(a));
+    } else if gm.best > 0.0 && et > 4.6 {
+        pen.tex(&art.trophy, cx + big * 2.6, ty + 6.0, 0.7, Color::WHITE.with_alpha(0.6));
+        pen.text(cx + big * 2.6 + 32.0, ty + 6.0, 16.0, bca(pal::CREAM, 0.7), &format!("{:.0}", gm.best));
+    }
+    // species collected this game
+    let seen: Vec<usize> = (0..crate::eco::N).filter(|&i| gm.isl[0].seen[i]).collect();
+    let n = seen.len() as f32;
+    let cell = ((l.w * 0.8) / crate::eco::N as f32).clamp(16.0, 30.0);
+    let ry = ty + 34.0;
+    let shown_n = ((et - 0.4) / 0.08).max(0.0) as usize;
+    for (j, &i) in seen.iter().enumerate().take(shown_n) {
+        let x = cx + (j as f32 - (n - 1.0) / 2.0) * cell;
+        let tex = &icons.sp[i];
+        pen.tex(tex, x, ry, cell * 0.95 / tex.size.x.max(1.0), Color::WHITE);
     }
     // the crowd: rows of pawns bouncing with the mood of the show
-    let ex = excitement(et);
+    let ex = excitement(et, gm.stars);
     let mut crng = Rng::new(state.crowd_seed | 1);
     let spacing = 26.0;
     let cols = (l.w / spacing) as usize + 2;
@@ -1107,8 +1204,7 @@ fn relation_lines(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layou
 
 #[allow(clippy::too_many_arguments)]
 fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, state: &HudState, t: f32) {
-    let slot = gm.view;
-    let isl = &gm.isl[slot];
+    let isl = &gm.isl[0];
     let (w, h) = (l.w, l.h);
     let vs = view.s;
     // badges: sad, hungry, pollinated or fruiting, scorched
@@ -1136,10 +1232,7 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
         }
     }
     // interactions: a line from actor to target, coloured by kind
-    for (sl, kind, a, b, ok, age) in &state.links {
-        if *sl != slot {
-            continue;
-        }
+    for (kind, a, b, ok, age) in &state.links {
         let k = (age / 1.3).clamp(0.0, 1.0);
         let fade = 1.0 - k;
         let (col, icon): (u32, Option<&Tex>) = match kind {
@@ -1152,6 +1245,7 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
             Link::Rod => (0xffe066, Some(&art.bolt)),
             Link::Pinch => (0xe0533d, None),
             Link::Compost => (0xa27ad0, Some(&art.sprout_on)),
+            Link::Drink => (0x6fc3ff, Some(&art.drop_icon)),
         };
         let pa = view.to_screen_h(a.x, a.y, 14.0);
         let pb = view.to_screen_h(b.x, b.y, 10.0);
@@ -1175,10 +1269,19 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
             pen.tex(&art.heart_broken, pb.x, pb.y - 16.0, 0.9, Color::WHITE.with_alpha(fade));
         }
     }
-    for (sl, p, age) in &state.fears {
-        if *sl != slot {
-            continue;
+    for (p, age) in &state.adapts {
+        let gh = ground_h(isl, p.x, p.y);
+        let q = view.to_screen_h(p.x, p.y, gh + 30.0);
+        let k = age / 1.6;
+        let a = 1.0 - k;
+        pen.ring(art, q.x, q.y, 10.0 + k * 40.0, bca(pal::GOLD, a));
+        for i in 0..5 {
+            let ang = i as f32 / 5.0 * TAU + age * 3.0;
+            let r = 14.0 + k * 22.0;
+            pen.tex(&art.spark, q.x + ang.cos() * r, q.y + ang.sin() * r * 0.7 - k * 20.0, 1.1, bca(pal::GOLD, a));
         }
+    }
+    for (p, age) in &state.fears {
         let gh = ground_h(isl, p.x, p.y);
         let q = view.to_screen_h(p.x, p.y, gh + 40.0);
         let pop = if *age < 0.2 { ease_back(age / 0.2) } else { 1.0 };
@@ -1215,10 +1318,8 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
                     let y = c.y - (26.0 + k * 34.0) * vs;
                     pen.circle(art, x, y, (2.0 + k * 1.5) * vs, bca(0xe6f6fb, 0.85 * (1.0 - k)));
                 }
-                if slot == 0 {
-                    let pul = 1.0 + (t * 6.0).sin() * 0.08;
-                    pen.tex_full(&art.ring, c.x, c.y, Vec2::new(1.6 * pul * vs, 0.95 * pul * vs), 0.0, false, bca(pal::GOLD, 0.9));
-                }
+                let pul = 1.0 + (t * 6.0).sin() * 0.08;
+                pen.tex_full(&art.ring, c.x, c.y, Vec2::new(1.6 * pul * vs, 0.95 * pul * vs), 0.0, false, bca(pal::GOLD, 0.9));
             }
         }
     }
@@ -1226,7 +1327,7 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
     let sel = gm.selected();
     let hover = pointer.hover_tile;
     match sel {
-        Some(Card::Nature(sp)) if slot == 0 && !gm.paused => {
+        Some(Card::Nature(sp)) if !gm.paused => {
             let pul = 1.0 + (t * 4.0).sin() * 0.12;
             for (tile, _v, hh) in gm.hints(sp) {
                 let tl = &isl.map.tiles[tile];
@@ -1265,15 +1366,43 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
                 }
             }
         }
-        Some(Card::Storm) if slot != 0 => {
-            if let Some(tile) = hover {
-                let tl = &isl.map.tiles[tile];
-                let o = view.to_screen(tl.x, tl.y);
-                dashed_ellipse(g, w, h, o, HS * 2.2 * vs, HS * 2.2 * SQ * vs, bc(pal::RED));
-                pen.tex(&icons.storm, o.x, o.y - 80.0 * vs, 1.1 * vs, Color::WHITE.with_alpha(0.75));
+        Some(Card::Biome(b)) if !gm.paused => {
+            // valid centres glow faintly; the hovered footprint shows what happens to whom
+            for (ti, tl) in isl.map.tiles.iter().enumerate() {
+                if isl.can_biome(ti) {
+                    let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
+                    pen.tex(&art.hex, p.x, p.y, 0.9 * vs, bca(pal::GOLD, 0.06 + (t * 3.0).sin().abs() * 0.04));
+                }
+            }
+            if let Some(tile) = hover.filter(|&tl| isl.can_biome(tl)) {
+                let (c, ring) = b.terrain();
+                for u in isl.biome_tiles(tile) {
+                    let tl = &isl.map.tiles[u];
+                    let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
+                    let to = if u == tile { c } else { ring };
+                    pen.tex(&art.hex, p.x, p.y, 0.9 * vs, bca(crate::models::terrain_col(to, 0.5, 0.5), 0.55));
+                    pen.tex(&art.hex_line, p.x, p.y, 0.95 * vs, bc(pal::GOLD));
+                }
+                let o = view.to_screen(isl.map.tiles[tile].x, isl.map.tiles[tile].y);
+                let tex = &icons.biomes[b.idx()];
+                pen.tex(tex, o.x, o.y - 30.0 * vs, 70.0 * vs / tex.size.x.max(1.0) * (1.0 + (t * 4.0).sin() * 0.04), Color::WHITE.with_alpha(0.8));
+                for (u, fate) in isl.biome_preview(tile, b) {
+                    let Some((id, _)) = isl.map.tiles[u].occ else { continue };
+                    let Some(e) = isl.ent(id) else { continue };
+                    let top = ent_points(isl, view, e).1;
+                    let bob = (t * 5.0 + u as f32).sin() * 2.0;
+                    let (y, x) = (top.y - 14.0 + bob, top.x);
+                    pen.circle(art, x, y, 11.0, bca(pal::SLATE, 0.85));
+                    match fate {
+                        0 => pen.tex(&art.heart, x, y, 1.1, Color::WHITE),
+                        1 => pen.tex(&art.spark, x, y, 1.6, bc(pal::GOLD)),
+                        2 => pen.tex(&art.heart_broken, x, y, 1.1, Color::WHITE),
+                        _ => pen.tex(&art.glyph_paw, x, y, 0.9, bc(0x9fd3ff)),
+                    }
+                }
             }
         }
-        None if gm.shovel && slot == 0 => {
+        None if gm.shovel => {
             for tl in isl.map.tiles.iter().filter(|t| t.occ.is_some()) {
                 let p = view.to_screen_h(tl.x, tl.y, crate::models::terrain_h(tl.t));
                 pen.tex(&art.hex_line, p.x, p.y, 0.9 * vs, Color::WHITE.with_alpha(0.55));
@@ -1305,9 +1434,6 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
     }
     // floating labels: +3, x4, MEGA!, WOW!
     for (p, age) in &state.popups {
-        if p.slot != slot {
-            continue;
-        }
         let k = age / p.max;
         let pop = if *age < 0.25 { ease_back(age / 0.25) } else { 1.0 };
         let base = view.to_screen(p.x, p.y);
@@ -1320,12 +1446,10 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
 fn draw_gallery(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout) {
     pen.rect(0.0, 0.0, l.w, l.h, art, bc(0xe9e2d2));
     let mut items: Vec<&Tex> = icons.sp.iter().collect();
-    items.extend([&icons.storm, &icons.beetle, &icons.whale]);
-    for p in &icons.pawns {
-        items.extend(p.iter());
-    }
+    items.extend(icons.biomes.iter());
+    items.extend([&icons.storm, &icons.beetle, &icons.whale, &icons.pawn_white]);
     let cols = 8;
-    let cell = (l.w - 40.0) / cols as f32;
+    let cell = ((l.w - 40.0) / cols as f32).min((l.h - 40.0) / (items.len().div_ceil(cols) as f32 * 0.95));
     for (i, t) in items.iter().enumerate() {
         let (cx, cy) = (20.0 + (i % cols) as f32 * cell + cell / 2.0, 20.0 + (i / cols) as f32 * cell * 0.95 + cell / 2.0);
         pen.rrect(art, cx - cell * 0.46, cy - cell * 0.44, cell * 0.92, cell * 0.88, 12.0, Some(bc(0xf6f1e6)), Some(bca(pal::SLATE, 0.25)));
@@ -1344,7 +1468,7 @@ fn env_pill(pen: &mut Pen, art: &Art, isl: &crate::sim::Island, tile: usize, e: 
     pen.rrect(art, x0, y0, wdt, 24.0, 12.0, Some(bca(pal::SLATE, 0.88)), Some(bca(pal::CREAM, 0.2)));
     let mut x = x0 + 14.0;
     let lvl = |v: f32| ((v * 3.0).round() as i32).clamp(0, 3);
-    let m = if t.t == crate::island::Terr::Pond { 3 } else { lvl(t.moist) };
+    let m = if t.t.water() { 3 } else { lvl(t.moist) };
     for k in 0..3 {
         pen.tex(&art.drop_icon, x, at.y, 0.7, if k < m { bc(0x6fc3ff) } else { bca(pal::CREAM, 0.2) });
         x += 12.0;

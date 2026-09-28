@@ -458,16 +458,193 @@ pub fn species(sp: Sp, v: u8) -> Model {
             }
             m.add(ico(7.0, 1), at(0.0, 7.5, 0.0).with_scale(Vec3::new(1.05, 0.55, 1.25)), r);
         }
+        Sp::Fern => {
+            let g = if v % 2 == 1 { 0x3f8f45 } else { 0x4a9a3e };
+            for i in 0..6 {
+                let a = i as f32 / 6.0 * TAU + v as f32 * 0.4;
+                let dir = Vec3::new(a.cos(), 0.9, a.sin()).normalize();
+                let rot = Quat::from_rotation_arc(Vec3::X, Vec3::new(dir.x, 0.0, dir.z).normalize()) * Quat::from_rotation_z(0.75);
+                m.add(cuboid(15.0, 0.9, 4.2), Transform::from_translation(Vec3::new(dir.x * 6.0, 6.5, dir.z * 6.0)).with_rotation(rot), if i % 2 == 0 { g } else { crate::art::shade(g, 0.88) });
+            }
+            m.add_thin(ico(2.6, 0), at(0.0, 3.0, 0.0), crate::art::shade(g, 0.7), 0.5);
+        }
+        Sp::Pine => {
+            m.add(cyl(2.2, 9.0, 6), at(0.0, 4.5, 0.0), 0x6e4a30);
+            let g = if v % 2 == 1 { 0x2c6b45 } else { 0x2f7550 };
+            for (k, (r, h, y)) in [(13.0, 18.0, 15.0), (10.5, 16.0, 25.0), (7.5, 14.0, 34.0)].iter().enumerate() {
+                m.add(cone(*r, *h, 7), at(0.0, *y, 0.0), crate::art::shade(g, 1.0 + k as f32 * 0.05));
+                if v != 1 {
+                    // snow on the boughs
+                    m.add_thin(cone(r * 0.55, h * 0.4, 7), at(0.0, y + h * 0.3, 0.0), 0xf4f7f8, 0.6);
+                }
+            }
+        }
+        Sp::Cactus => {
+            let g = if v % 2 == 1 { 0x4f8f45 } else { 0x5c9c4a };
+            m.add(cyl(4.2, 24.0, 7), at(0.0, 12.0, 0.0), g);
+            m.add(ico(4.2, 1), at(0.0, 24.0, 0.0), g);
+            for (side, y0, len) in [(1.0f32, 9.0, 9.0), (-1.0, 13.0, 7.0)] {
+                m.add(cyl(2.6, 7.0, 6), rot_z(at(side * 5.5, y0, 0.0), FRAC_PI_2), crate::art::shade(g, 0.95));
+                m.add(cyl(2.6, len, 6), at(side * 8.5, y0 + len / 2.0, 0.0), crate::art::shade(g, 0.95));
+                m.add(ico(2.6, 0), at(side * 8.5, y0 + len, 0.0), crate::art::shade(g, 0.95));
+            }
+            if v % 2 == 0 {
+                m.add_thin(ico(2.2, 0), at(0.0, 28.5, 0.0), 0xe8577a, 0.6);
+            }
+        }
+        Sp::Reed => {
+            for (k, (x, z, h)) in [(0.0f32, 0.0f32, 26.0f32), (-4.0, 3.0, 21.0), (4.5, 2.0, 23.0), (1.5, -4.0, 18.0), (-3.0, -3.0, 15.0)].iter().enumerate() {
+                m.add_thin(cyl(0.6, *h, 4), at(*x, h / 2.0, *z), 0x6b9a3c, 0.5);
+                if k < 3 {
+                    m.add(cyl(1.6, 6.0, 6), at(*x, h - 2.0, *z), 0x7a4a2a);
+                } else {
+                    m.add_thin(cuboid(1.0, 9.0, 2.2), rot_z(at(*x + 1.5, h * 0.6, *z), -0.35), 0x7fb04a, 0.5);
+                }
+            }
+        }
+        Sp::Fireweed => {
+            let pc = if v % 2 == 1 { 0xc93d8a } else { 0xe0559b };
+            for (x, z, h) in [(0.0f32, 0.0f32, 20.0f32), (-4.5, 2.5, 15.0), (4.0, -2.0, 17.0)] {
+                m.add_thin(cyl(0.7, h, 5), at(x, h / 2.0, z), 0x3f6a2e, 0.5);
+                for k in 0..4 {
+                    let y = h * 0.55 + k as f32 * h * 0.13;
+                    m.add_thin(ico(1.9 - k as f32 * 0.3, 0), at(x, y, z), pc, 0.6);
+                }
+            }
+            m.add_thin(ico(3.5, 0), at(0.0, 0.8, 0.0).with_scale(Vec3::new(1.6, 0.4, 1.4)), 0x3a3336, 0.5);
+        }
+        Sp::Deer => {
+            base(&mut m, 10.0);
+            let fur = if v == 3 { 0x9a6436 } else { 0xb97b42 };
+            for (x, z) in [(-4.5f32, -2.2f32), (-4.5, 2.2), (4.5, -2.2), (4.5, 2.2)] {
+                m.add_thin(cyl(1.0, 9.0, 5), at(x, 7.5, z), crate::art::shade(fur, 0.75), 0.5);
+            }
+            m.add(ico(6.0, 1), at(0.0, 15.0, 0.0).with_scale(Vec3::new(1.5, 0.9, 0.9)), fur);
+            m.add_thin(ico(1.8, 0), at(-8.5, 16.5, 0.0), 0xf3ecdf, 0.5);
+            m.add(cyl(2.2, 9.0, 6), rot_z(at(6.8, 21.0, 0.0), -0.5), fur);
+            m.add(ico(3.6, 1), at(9.5, 26.0, 0.0).with_scale(Vec3::new(1.3, 0.9, 0.9)), fur);
+            m.add_thin(ico(0.9, 0), at(13.8, 25.5, 0.0), 0x1c1a18, 0.3);
+            for z in [-1.6f32, 1.6] {
+                m.add_thin(ico(0.7, 0), at(11.0, 27.3, z * 1.4), 0x1c1a18, 0.0);
+                // antlers
+                m.add_thin(cuboid(1.0, 8.0, 1.0), Transform::from_xyz(8.5, 32.5, z * 1.8).with_rotation(Quat::from_rotation_x(z * 0.25)), 0xe8dcc0, 0.6);
+                m.add_thin(cuboid(1.0, 4.5, 1.0), Transform::from_xyz(10.5, 34.0, z * 2.4).with_rotation(Quat::from_rotation_z(-0.7)), 0xe8dcc0, 0.6);
+            }
+        }
+        Sp::Goat => {
+            base(&mut m, 9.5);
+            let fur = if v == 3 { 0x8a7f74 } else { 0xece8de };
+            for (x, z) in [(-4.0f32, -2.2f32), (-4.0, 2.2), (4.0, -2.2), (4.0, 2.2)] {
+                m.add_thin(cyl(1.1, 6.0, 5), at(x, 6.0, z), 0x4a4038, 0.5);
+            }
+            m.add(ico(6.2, 1), at(0.0, 12.5, 0.0).with_scale(Vec3::new(1.35, 0.95, 1.0)), fur);
+            m.add(ico(3.8, 1), at(8.0, 17.5, 0.0).with_scale(Vec3::new(1.2, 1.0, 0.9)), fur);
+            m.add_thin(cone(1.3, 4.0, 4), at(9.5, 12.8, 0.0).with_rotation(Quat::from_rotation_z(PI)), crate::art::shade(fur, 0.8), 0.4);
+            for z in [-1.8f32, 1.8] {
+                m.add(cone(1.4, 8.0, 5), Transform::from_xyz(6.2, 23.5, z).with_rotation(Quat::from_rotation_z(0.9)), 0x6b6258);
+                m.add_thin(ico(0.8, 0), at(11.2, 18.5, z * 1.2), 0x1c1a18, 0.0);
+            }
+        }
+        Sp::Duck => {
+            base(&mut m, 8.5);
+            let (body, head) = if v % 2 == 1 { (0xf3f0e8, 0xf3f0e8) } else { (0xa08a6a, 0x2f7a4a) };
+            m.add(ico(6.5, 1), at(-1.0, 8.5, 0.0).with_scale(Vec3::new(1.35, 0.8, 1.0)), body);
+            m.add(cone(3.0, 5.0, 5), rot_z(at(-9.5, 10.5, 0.0), 1.9), crate::art::shade(body, 0.85));
+            m.add(ico(3.8, 1), at(5.0, 15.5, 0.0), head);
+            m.add(cuboid(4.5, 1.4, 3.0), at(9.5, 15.0, 0.0), 0xf0a02a);
+            for z in [-2.4f32, 2.4] {
+                m.add_thin(ico(0.8, 0), at(7.5, 16.8, z), 0x1c1a18, 0.0);
+                m.add(ico(3.5, 0), at(-1.5, 10.0, z * 2.2).with_scale(Vec3::new(1.4, 0.6, 0.35)), crate::art::shade(body, 0.85));
+            }
+        }
+        Sp::Fish => {
+            m.add_paint(cyl(5.0, 2.0, 10), at(0.0, 1.0, 0.0), Paint::TopSide { top: 0xc79b62, side: 0x8a6440, strata: -99.0 }, OUT);
+            m.add_thin(cyl(0.45, 8.0, 5), at(0.0, 6.0, 0.0), 0xd7e6ea, 0.0);
+            let (c, fin) = if v % 2 == 1 { (0x4a86c8, 0x2f5f9a) } else { (0xf07a3a, 0xf3efe6) };
+            let arc = Quat::from_rotation_z(0.35);
+            m.add(ico(5.0, 1), Transform::from_xyz(0.0, 13.0, 0.0).with_rotation(arc).with_scale(Vec3::new(1.6, 0.9, 0.6)), c);
+            m.add(cuboid(1.0, 8.0, 5.0), Transform::from_xyz(-9.0, 10.0, 0.0).with_rotation(Quat::from_rotation_z(0.9)), fin);
+            m.add_thin(cuboid(4.0, 3.0, 0.8), Transform::from_xyz(0.0, 18.0, 0.0).with_rotation(arc), fin, 0.5);
+            for z in [-2.4f32, 2.4] {
+                m.add_thin(ico(0.8, 0), at(5.5, 15.5, z), 0x1c1a18, 0.0);
+            }
+        }
+        Sp::Lizard => {
+            base(&mut m, 9.0);
+            let c = if v % 2 == 1 { 0xd98a3a } else { 0x3fa07a };
+            m.add(ico(4.5, 1), at(0.0, 6.0, 0.0).with_scale(Vec3::new(1.7, 0.6, 0.9)), c);
+            m.add(ico(3.2, 0), at(8.0, 7.0, 0.0).with_scale(Vec3::new(1.3, 0.7, 0.9)), c);
+            m.add(cone(2.2, 11.0, 5), Transform::from_xyz(-11.0, 5.0, 0.0).with_rotation(Quat::from_rotation_z(FRAC_PI_2 + 0.1)), crate::art::shade(c, 0.9));
+            for (x, z) in [(-3.5f32, 1.0f32), (3.5, -1.0)] {
+                for sgn in [-1.0f32, 1.0] {
+                    m.add_thin(cuboid(1.2, 1.2, 4.5), Transform::from_xyz(x, 4.2, sgn * (4.5 + z * 0.2)), crate::art::shade(c, 0.8), 0.4);
+                }
+            }
+            for z in [-1.6f32, 1.6] {
+                m.add_thin(ico(0.9, 0), at(9.5, 8.6, z), 0xf2c14e, 0.3);
+            }
+            for k in 0..3 {
+                m.add_thin(ico(1.1, 0), at(-2.5 + k as f32 * 2.5, 8.6, 0.0), crate::art::shade(c, 1.15), 0.3);
+            }
+        }
+        Sp::Camel => {
+            base(&mut m, 11.0);
+            let c = if v == 3 { 0xb07e44 } else { 0xcf9f5e };
+            for (x, z) in [(-5.5f32, -2.4f32), (-5.5, 2.4), (5.5, -2.4), (5.5, 2.4)] {
+                m.add_thin(cyl(1.2, 14.0, 5), at(x, 10.0, z), crate::art::shade(c, 0.8), 0.5);
+            }
+            m.add(ico(6.5, 1), at(0.0, 20.0, 0.0).with_scale(Vec3::new(1.5, 0.75, 0.85)), c);
+            m.add(ico(4.2, 1), at(-2.5, 26.0, 0.0).with_scale(Vec3::new(1.0, 0.9, 0.8)), crate::art::shade(c, 1.05));
+            if v % 2 == 0 {
+                m.add(ico(3.8, 1), at(3.5, 25.5, 0.0).with_scale(Vec3::new(1.0, 0.9, 0.8)), crate::art::shade(c, 1.05));
+            }
+            m.add(cyl(2.2, 11.0, 6), rot_z(at(10.5, 25.0, 0.0), -0.7), c);
+            m.add(ico(3.3, 1), at(14.5, 30.5, 0.0).with_scale(Vec3::new(1.5, 0.8, 0.8)), c);
+            for z in [-1.6f32, 1.6] {
+                m.add_thin(ico(0.8, 0), at(15.5, 32.0, z * 1.3), 0x1c1a18, 0.0);
+            }
+            m.add_thin(cuboid(2.0, 5.0, 1.0), rot_z(at(-10.0, 18.0, 0.0), 0.4), crate::art::shade(c, 0.7), 0.5);
+        }
     }
     m
 }
 
+/// Boulders on the rim of a rocky tile (the middle stays free for goats and lizards).
 pub fn rock(big: bool) -> Model {
     let mut m = Model::default();
-    m.add(ico(10.0, 0), at(0.0, 5.0, 0.0).with_scale(Vec3::new(1.4, 0.8, 1.1)), 0x9aa0a3);
+    m.add(ico(7.0, 0), at(-15.0, 3.0, -8.0).with_scale(Vec3::new(1.4, 0.9, 1.1)), 0x8f959a);
+    m.add(ico(4.5, 0), at(14.0, 2.0, -11.0).with_scale(Vec3::new(1.2, 0.8, 1.0)), 0x7f858a);
     if big {
-        m.add(ico(6.0, 0), at(11.0, 3.0, 5.0).with_scale(Vec3::new(1.2, 0.8, 1.0)), 0x878d90);
+        m.add(ico(5.0, 0), at(-6.0, 2.0, 16.0).with_scale(Vec3::new(1.2, 0.8, 1.0)), 0x878d90);
     }
+    m
+}
+
+/// A volcano cone that fills its tile, with a glowing crater and lava runs.
+pub fn volcano() -> Model {
+    let mut m = Model::default();
+    let rock = 0x4a3d3f;
+    m.add(frustum(9.0, 27.0, 34.0, 7), at(0.0, 17.0, 0.0), rock);
+    m.add(frustum(6.0, 10.0, 6.0, 7), at(0.0, 33.0, 0.0), crate::art::shade(rock, 0.85));
+    m.add_thin(cyl(7.0, 1.0, 7), at(0.0, 35.6, 0.0), 0xff6a2a, 0.0);
+    for i in 0..4 {
+        let a = i as f32 / 4.0 * TAU + 0.5;
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        let d = (out * 18.0 - Vec3::Y * 34.0).normalize();
+        let len = 22.0 - i as f32 * 4.0;
+        let c = out * 9.5 + Vec3::Y * 34.0 + d * (len / 2.0) + out * 0.8;
+        m.add_thin(cuboid(3.0, len, 1.2), Transform::from_translation(c).with_rotation(Quat::from_rotation_arc(Vec3::Y, d) * Quat::from_rotation_y(-a + FRAC_PI_2)), if i % 2 == 0 { 0xf08a2a } else { 0xe8552a }, 0.0);
+    }
+    m
+}
+
+/// A snowy mountain that fills its tile.
+pub fn peak() -> Model {
+    let mut m = Model::default();
+    m.add(cone(27.0, 44.0, 7), at(0.0, 22.0, 0.0), 0x7f8790);
+    m.add(cone(17.0, 30.0, 6), at(10.0, 15.0, 8.0), 0x6f7780);
+    m.add(cone(12.0, 18.0, 7), at(0.0, 38.0, 0.0), 0xf3f6f8);
+    m.add(cone(8.0, 11.0, 6), at(10.0, 25.5, 8.0), 0xf3f6f8);
     m
 }
 
@@ -538,9 +715,14 @@ pub fn pawn(color: u32, mood: u8) -> Model {
 pub fn terrain_h(t: Terr) -> f32 {
     match t {
         Terr::Sand => 0.0,
-        Terr::Grass | Terr::Rock => 2.5,
+        Terr::Grass => 2.5,
         Terr::Mead => 3.2,
         Terr::Pond => -2.0,
+        Terr::Rock => 7.0,
+        Terr::Ash | Terr::Volcano => 3.0,
+        Terr::Lake => -4.5,
+        Terr::Snow | Terr::Peak => 5.0,
+        Terr::Dune => 1.5,
     }
 }
 
@@ -556,23 +738,30 @@ fn lerp_col(a: u32, b: u32, k: f32) -> u32 {
 
 pub fn terrain_col(t: Terr, lush: f32, shade_k: f32) -> u32 {
     let base = match t {
-        Terr::Grass | Terr::Rock => lerp_col(0xa6b04f, 0x57a33a, lush),
+        Terr::Grass => lerp_col(0xa6b04f, 0x57a33a, lush),
         Terr::Mead => lerp_col(0xc2b75a, 0x80b640, lush),
         Terr::Sand => 0xe8c784,
         Terr::Pond => 0x3fa3c8,
+        Terr::Rock => 0x9aa0a3,
+        Terr::Ash => 0x5b5357,
+        Terr::Volcano => 0x4a4044,
+        Terr::Lake => 0x2a78ad,
+        Terr::Snow => 0xeef2f4,
+        Terr::Peak => 0xdde3e7,
+        Terr::Dune => 0xe4a656,
     };
     crate::art::shade(base, 1.0 + (shade_k - 0.5) * 0.08)
 }
 
 /// Tint a tile top by its soil: wet is darker and richer, dry grass turns straw, fertile grass deepens.
 pub fn soil_col(t: &crate::island::Tile, base: u32) -> u32 {
-    if t.t == Terr::Pond {
+    if t.t.water() || matches!(t.t, Terr::Snow | Terr::Peak | Terr::Volcano | Terr::Rock) {
         return base;
     }
     let wet = ((t.moist - 0.55) / 0.45).clamp(0.0, 1.0);
     let dry = ((0.32 - t.moist) / 0.32).clamp(0.0, 1.0);
     let rich = ((t.fert - 0.55) / 0.45).clamp(0.0, 1.0);
-    let grassy = matches!(t.t, Terr::Grass | Terr::Mead | Terr::Rock);
+    let grassy = matches!(t.t, Terr::Grass | Terr::Mead);
     let mut c = base;
     if grassy {
         c = lerp_col(c, 0xd6c27a, dry * 0.55);
@@ -628,8 +817,38 @@ pub fn island(map: &IslandMap, lush: f32) -> Model {
     let mut m = Model::default();
     for t in &map.tiles {
         let top = soil_col(t, terrain_col(t.t, lush, t.shade));
-        let side = if t.t == Terr::Pond { 0x2f7fa0 } else { 0x9a6843 };
-        m.parts.push(Part { geo: hex_prism(t.x, t.y / SQ, terrain_h(t.t), HS * 0.985), paint: Paint::TopSide { top, side, strata: STRATA }, out: 1.5 });
+        let side = match t.t {
+            Terr::Pond | Terr::Lake => 0x2f7fa0,
+            Terr::Ash | Terr::Volcano => 0x3e3538,
+            Terr::Snow | Terr::Peak | Terr::Rock => 0x7d746c,
+            _ => 0x9a6843,
+        };
+        let h = terrain_h(t.t);
+        m.parts.push(Part { geo: hex_prism(t.x, t.y / SQ, h, HS * 0.985), paint: Paint::TopSide { top, side, strata: STRATA }, out: 1.5 });
+        // glowing embers in ash, ripples on dunes, lumps of snow
+        let z = t.y / SQ;
+        let k = (t.q * 31 + t.r * 17).rem_euclid(7) as f32;
+        match t.t {
+            Terr::Ash => {
+                for i in 0..3 {
+                    let a = k + i as f32 * 2.1;
+                    m.parts.push(Part { geo: ico(1.4, 0).transformed(at(t.x + a.cos() * 14.0, h + 0.5, z + a.sin() * 14.0)), paint: Paint::Solid(0xff7a2a), out: 0.0 });
+                }
+            }
+            Terr::Dune => {
+                for i in 0..2 {
+                    let off = (i as f32 - 0.5) * 16.0;
+                    m.parts.push(Part { geo: cuboid(26.0, 1.2, 3.0).transformed(at(t.x + k - 3.0, h + 0.3, z + off).with_rotation(Quat::from_rotation_y(0.3))), paint: Paint::Solid(0xd08f44), out: 0.0 });
+                }
+            }
+            Terr::Snow => {
+                for i in 0..2 {
+                    let a = k + i as f32 * 2.6;
+                    m.parts.push(Part { geo: ico(4.0, 0).transformed(at(t.x + a.cos() * 15.0, h, z + a.sin() * 15.0).with_scale(Vec3::new(1.3, 0.5, 1.0))), paint: Paint::Solid(0xffffff), out: 0.6 });
+                }
+            }
+            _ => {}
+        }
     }
     m
 }
@@ -649,6 +868,43 @@ pub fn shallows(map: &IslandMap) -> Model {
     m
 }
 
+/// A single board tile carrying a biome's landmark, for the biome cards.
+pub fn biome_icon(b: crate::eco::Biome) -> Model {
+    use crate::eco::Biome;
+    let (c, _) = b.terrain();
+    let mut m = Model::default();
+    let h = terrain_h(c).max(1.0);
+    let top = terrain_col(c, 0.5, 0.5);
+    let side = match b {
+        Biome::Volcano => 0x3e3538,
+        Biome::Lake => 0x2f7fa0,
+        Biome::Peak => 0x7d746c,
+        Biome::Desert => 0x9a6843,
+    };
+    m.parts.push(Part { geo: hex_prism(0.0, 0.0, h, HS), paint: Paint::TopSide { top, side, strata: STRATA }, out: 1.5 });
+    let lift = |mut f: Model, y: f32, sc: f32| {
+        for p in &mut f.parts {
+            p.geo = std::mem::take(&mut p.geo).transformed(Transform::from_xyz(0.0, y, 0.0).with_scale(Vec3::splat(sc)));
+        }
+        f
+    };
+    let feature = match b {
+        Biome::Volcano => lift(volcano(), h, 0.95),
+        Biome::Peak => lift(peak(), h, 0.95),
+        Biome::Lake => {
+            let mut f = lift(species(Sp::Lily, 0), h, 1.2);
+            f.parts.extend(lift(species(Sp::Reed, 0), h, 0.9).parts.into_iter().map(|mut p| {
+                p.geo = std::mem::take(&mut p.geo).transformed(Transform::from_xyz(-14.0, 0.0, -8.0));
+                p
+            }));
+            f
+        }
+        Biome::Desert => lift(species(Sp::Cactus, 0), h, 1.1),
+    };
+    m.parts.extend(feature.parts);
+    m
+}
+
 pub fn species_name(sp: Sp) -> &'static str {
     match sp {
         Sp::Flower => "flower",
@@ -663,5 +919,16 @@ pub fn species_name(sp: Sp) -> &'static str {
         Sp::Bird => "bird",
         Sp::Frog => "frog",
         Sp::Crab => "crab",
+        Sp::Fern => "fern",
+        Sp::Pine => "pine",
+        Sp::Cactus => "cactus",
+        Sp::Reed => "reed",
+        Sp::Fireweed => "fireweed",
+        Sp::Deer => "deer",
+        Sp::Goat => "goat",
+        Sp::Duck => "duck",
+        Sp::Fish => "fish",
+        Sp::Lizard => "lizard",
+        Sp::Camel => "camel",
     }
 }

@@ -1,7 +1,7 @@
 //! Mouse, touch and keyboard.
 
 use crate::hud::Layout;
-use crate::sim::{storm_hit, beetle_dist, Card, Sfx};
+use crate::sim::{beetle_dist, storm_hit, Sfx};
 use crate::world::MainView;
 use crate::{sfx, Pending, Scene, Session, Settings};
 use bevy::app::AppExit;
@@ -20,7 +20,6 @@ pub enum BtnId {
     PauseHome,
     Reroll,
     Shovel,
-    Home,
     Again,
     EndHome,
 }
@@ -39,7 +38,6 @@ pub struct Pointer {
     pub down: bool,
     pub hover_tile: Option<usize>,
     pub hover_card: Option<usize>,
-    pub hover_portrait: Option<usize>,
     pub hover: Option<BtnId>,
     pub drag: Option<Drag>,
     touch_id: Option<u64>,
@@ -52,11 +50,7 @@ fn card_at(l: &Layout, p: Vec2) -> Option<usize> {
     })
 }
 
-fn portrait_at(l: &Layout, p: Vec2) -> Option<usize> {
-    (0..4).find(|&i| l.p[i].contains(p))
-}
-
-fn button_at(l: &Layout, scene: Scene, paused: bool, viewing_home: bool, p: Vec2) -> Option<BtnId> {
+fn button_at(l: &Layout, scene: Scene, paused: bool, p: Vec2) -> Option<BtnId> {
     if l.mute.hit(p) {
         return Some(BtnId::Mute);
     }
@@ -97,8 +91,6 @@ fn button_at(l: &Layout, scene: Scene, paused: bool, viewing_home: bool, p: Vec2
                 Some(BtnId::Reroll)
             } else if l.shovel.hit(p) {
                 Some(BtnId::Shovel)
-            } else if !viewing_home && l.home.hit(p) {
-                Some(BtnId::Home)
             } else {
                 None
             }
@@ -118,6 +110,7 @@ pub fn pointer_system(
     mut settings: ResMut<Settings>,
     mut pending: ResMut<Pending>,
     mut exit: EventWriter<AppExit>,
+    mut hud_state: ResMut<crate::hud::HudState>,
 ) {
     let mut pressed = None;
     let mut released = None;
@@ -155,15 +148,14 @@ pub fn pointer_system(
     let p = ptr.pos;
     // hover state
     let scene = session.scene;
-    let (paused, viewing_home) = session.game.as_ref().map(|g| (g.paused, g.view == 0)).unwrap_or((false, true));
-    ptr.hover = button_at(&layout, scene, paused, viewing_home, p);
+    let paused = session.game.as_ref().map(|g| g.paused).unwrap_or(false);
+    ptr.hover = button_at(&layout, scene, paused, p);
     ptr.hover_card = if scene == Scene::Play { card_at(&layout, p) } else { None };
-    ptr.hover_portrait = if scene == Scene::Play { portrait_at(&layout, p) } else { None };
     ptr.hover_tile = None;
     if scene == Scene::Play && layout.isle.contains(p) {
         if let Some(g) = session.game.as_ref() {
             let lp = view.to_local(p);
-            ptr.hover_tile = g.isl[g.view].map.tile_at(lp.x, lp.y);
+            ptr.hover_tile = g.isl[0].map.tile_at(lp.x, lp.y);
         }
     }
     if let Some(d) = ptr.drag.as_mut() {
@@ -174,7 +166,7 @@ pub fn pointer_system(
 
     if let Some(at) = pressed {
         ptr.down = true;
-        on_down(at, &layout, &view, &mut ptr, &mut session, &mut settings, &mut pending, &mut exit);
+        on_down(at, &layout, &view, &mut ptr, &mut session, &mut settings, &mut pending, &mut exit, &mut hud_state);
     }
     if let Some(at) = released {
         ptr.down = false;
@@ -183,10 +175,11 @@ pub fn pointer_system(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mut Session, settings: &mut Settings, pending: &mut Pending, exit: &mut EventWriter<AppExit>) {
+#[allow(clippy::too_many_arguments)]
+fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mut Session, settings: &mut Settings, pending: &mut Pending, exit: &mut EventWriter<AppExit>, hud_state: &mut crate::hud::HudState) {
     let scene = session.scene;
-    let (paused, viewing_home) = session.game.as_ref().map(|g| (g.paused, g.view == 0)).unwrap_or((false, true));
-    if let Some(b) = button_at(l, scene, paused, viewing_home, p) {
+    let paused = session.game.as_ref().map(|g| g.paused).unwrap_or(false);
+    if let Some(b) = button_at(l, scene, paused, p) {
         match b {
             BtnId::Mute => {
                 settings.muted = !settings.muted;
@@ -195,7 +188,8 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
             }
             BtnId::Play => {
                 sfx(pending, Sfx::Place);
-                session.start_game(settings.diff);
+                session.start_game(settings.diff, settings.best);
+                hud_state.reset_play();
             }
             BtnId::Dice => {
                 session.reroll_title();
@@ -207,7 +201,8 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
             BtnId::Again => {
                 if session.game.as_ref().map(|g| g.end_t > crate::sim::END_BUTTONS_AT).unwrap_or(false) {
                     session.reroll_title();
-                    session.start_game(settings.diff);
+                    session.start_game(settings.diff, settings.best);
+                    hud_state.reset_play();
                     sfx(pending, Sfx::Place);
                 }
             }
@@ -246,16 +241,8 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
                 if let Some(g) = session.game.as_mut() {
                     g.shovel = !g.shovel;
                     g.sel = None;
-                    if g.shovel {
-                        set_view(g, 0, pending);
-                    }
                 }
                 sfx(pending, Sfx::Click);
-            }
-            BtnId::Home => {
-                if let Some(g) = session.game.as_mut() {
-                    set_view(g, 0, pending);
-                }
             }
         }
         return;
@@ -275,12 +262,12 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
     }
     let Some(g) = session.game.as_mut() else { return };
     if let Some(ci) = card_at(l, p) {
-        let slot = &mut g.players[0].hand[ci];
-        let Some(card) = slot.card else {
+        let slot = &mut g.hand[ci];
+        if slot.card.is_none() {
             slot.wig = 1.0;
             sfx(pending, Sfx::Nope);
             return;
-        };
+        }
         g.shovel = false;
         let was = g.sel == Some(ci);
         g.sel = Some(ci);
@@ -288,13 +275,6 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
         if !was {
             sfx(pending, Sfx::Pick);
         }
-        if matches!(card, Card::Nature(_)) && g.view != 0 {
-            set_view(g, 0, pending);
-        }
-        return;
-    }
-    if let Some(pi) = portrait_at(l, p) {
-        portrait_tap(g, pi, pending);
         return;
     }
     if l.isle.contains(p) {
@@ -317,23 +297,7 @@ fn on_up(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mut 
         }
         return;
     }
-    if g.sel != Some(d.si) || g.players[0].hand[d.si].card.is_none() {
-        return;
-    }
-    if let Some(pi) = portrait_at(l, p) {
-        let c = g.players[0].hand[d.si].card;
-        match c {
-            Some(c) if c.is_attack() && pi != 0 => {
-                g.attack(0, d.si, pi, None);
-                g.sel = None;
-            }
-            Some(Card::Shield) if pi == 0 => {
-                g.use_shield(0, d.si);
-                g.sel = None;
-            }
-            _ => {}
-        }
-        pending.ev.extend(g.ev.drain(..));
+    if g.sel != Some(d.si) || g.hand[d.si].card.is_none() {
         return;
     }
     if l.isle.contains(p) {
@@ -341,115 +305,54 @@ fn on_up(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mut 
     }
 }
 
-fn set_view(g: &mut crate::sim::Game, i: usize, pending: &mut Pending) {
-    if g.view != i {
-        g.view = i;
-        g.fade = 0.6;
-        g.inspect = None;
-        sfx(pending, Sfx::Click);
-    }
-}
-
-fn portrait_tap(g: &mut crate::sim::Game, pi: usize, pending: &mut Pending) {
-    let c = g.selected();
-    match (c, g.sel) {
-        (Some(c), Some(si)) if c.is_attack() && pi != 0 => {
-            g.attack(0, si, pi, None);
-            g.sel = None;
-        }
-        (Some(Card::Shield), Some(si)) if pi == 0 => {
-            g.use_shield(0, si);
-            g.sel = None;
-        }
-        (Some(Card::Nature(_)), _) => {
-            g.sel = None;
-            set_view(g, pi, pending);
-        }
-        _ => set_view(g, pi, pending),
-    }
-    pending.ev.extend(g.ev.drain(..));
-}
-
 fn island_tap(g: &mut crate::sim::Game, view: &MainView, p: Vec2, pending: &mut Pending) {
     let lp = view.to_local(p);
-    let vi = g.view;
-    // defend your own island first: the whale, storms, then beetles
-    if vi == 0 {
-        if let Some(w) = g.isl[0].whale.as_ref() {
-            if w.active() && (lp.x - w.x).hypot((lp.y - w.y + 8.0) * 1.3) < 48.0 && g.tap_whale() {
-                pending.ev.extend(g.ev.drain(..));
-                return;
-            }
-        }
-        if let Some(id) = g.isl[0].storms.iter().find(|s| s.active() && storm_hit(s, lp.x, lp.y)).map(|s| s.id) {
-            g.tap_storm(0, id, true);
-            pending.ev.extend(g.ev.drain(..));
-            return;
-        }
-        let bug = g.isl[0]
-            .beetles
-            .iter()
-            .filter(|b| b.active())
-            .map(|b| (beetle_dist(b, lp.x, lp.y), b.id))
-            .filter(|(d, _)| *d < 22.0)
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        if let Some((_, id)) = bug {
-            g.tap_beetle(0, id, true);
+    // the whale, storms and beetles come first
+    if let Some(w) = g.isl[0].whale.as_ref() {
+        if w.active() && (lp.x - w.x).hypot((lp.y - w.y + 8.0) * 1.3) < 48.0 && g.tap_whale() {
             pending.ev.extend(g.ev.drain(..));
             return;
         }
     }
-    let tile = g.isl[vi].map.tile_at(lp.x, lp.y);
-    let sel = g.sel;
-    match g.selected() {
-        Some(Card::Nature(_)) => {
-            if vi != 0 {
-                set_view(g, 0, pending);
-                return;
-            }
-            let si = sel.unwrap_or(0);
+    if let Some(id) = g.isl[0].storms.iter().find(|s| s.active() && storm_hit(s, lp.x, lp.y)).map(|s| s.id) {
+        g.tap_storm(id);
+        pending.ev.extend(g.ev.drain(..));
+        return;
+    }
+    let bug = g.isl[0]
+        .beetles
+        .iter()
+        .filter(|b| b.active())
+        .map(|b| (beetle_dist(b, lp.x, lp.y), b.id))
+        .filter(|(d, _)| *d < 22.0)
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some((_, id)) = bug {
+        g.tap_beetle(id);
+        pending.ev.extend(g.ev.drain(..));
+        return;
+    }
+    let tile = g.isl[0].map.tile_at(lp.x, lp.y);
+    match g.sel.filter(|&si| g.hand[si].card.is_some()) {
+        Some(si) => {
             if let Some(t) = tile {
-                if g.place(0, si, t) {
+                if g.play(si, t) {
                     g.sel = None;
                     pending.ev.extend(g.ev.drain(..));
                     return;
                 }
             }
-            g.players[0].hand[si].wig = 1.0;
+            g.hand[si].wig = 1.0;
             sfx(pending, Sfx::Nope);
         }
-        Some(Card::Storm) | Some(Card::Beetle) => {
-            let si = sel.unwrap_or(0);
-            if vi != 0 && tile.is_some() {
-                let target = if g.selected() == Some(Card::Storm) { tile } else { None };
-                g.attack(0, si, vi, target);
-                g.sel = None;
-                pending.ev.extend(g.ev.drain(..));
-            } else {
-                g.players[0].hand[si].wig = 1.0;
-                sfx(pending, Sfx::Nope);
-            }
-        }
-        Some(Card::Shield) => {
-            let si = sel.unwrap_or(0);
-            if vi == 0 {
-                g.use_shield(0, si);
-                g.sel = None;
-                pending.ev.extend(g.ev.drain(..));
-            } else {
-                g.players[0].hand[si].wig = 1.0;
-                sfx(pending, Sfx::Nope);
-            }
-        }
         None => {
-            if g.shovel && vi == 0 {
+            if g.shovel {
                 if let Some(t) = tile {
                     g.dig(t);
                     pending.ev.extend(g.ev.drain(..));
                 }
                 return;
             }
-            g.inspect = tile.filter(|&t| g.isl[vi].map.tiles[t].occ.is_some());
+            g.inspect = tile.filter(|&t| g.isl[0].map.tiles[t].occ.is_some());
             if g.inspect.is_some() {
                 sfx(pending, Sfx::Click);
             }
@@ -493,7 +396,7 @@ pub fn keyboard_system(
                 return;
             }
             for (i, k) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4].iter().enumerate() {
-                if keys.just_pressed(*k) && g.players[0].hand[i].card.is_some() {
+                if keys.just_pressed(*k) && g.hand[i].card.is_some() {
                     g.sel = if g.sel == Some(i) { None } else { Some(i) };
                     g.shovel = false;
                     sfx(&mut pending, Sfx::Pick);

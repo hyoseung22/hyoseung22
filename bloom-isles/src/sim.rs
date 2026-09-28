@@ -8,21 +8,22 @@ use crate::rng::Rng;
 pub const THRIVE: f32 = 0.72;
 pub use crate::eco::Biome;
 pub const SAD: f32 = 0.32;
-pub const DUR: f32 = 480.0;
+pub const DUR: f32 = 600.0;
 pub const GOAL: f32 = 300.0;
-pub const CARD_CD: f32 = 8.0;
+/// Seconds to deal one card. Empty slots fill one at a time.
+pub const CARD_CD: f32 = 11.0;
 pub const STORM_T: f32 = 12.0;
 pub const WITHER_T: f32 = 28.0;
 pub const REROLL_CD: f32 = 14.0;
 /// Seconds between good placements that keep a combo going.
-pub const COMBO_T: f32 = 10.0;
+pub const COMBO_T: f32 = 16.0;
 /// Island index used for the title-screen island.
 pub const TITLE: usize = 9;
 
 /// Seconds between natural hazards (beetle swarms, thunderclouds) per difficulty; 0 = none.
 pub const HAZARD_EVERY: [f32; 3] = [0.0, 110.0, 70.0];
 /// Score needed for one, two and three stars.
-pub const STAR_AT: [f32; 3] = [140.0, 240.0, 340.0];
+pub const STAR_AT: [f32; 3] = [130.0, 230.0, 330.0];
 
 pub fn state_of(h: f32) -> u8 {
     if h >= THRIVE {
@@ -1473,11 +1474,13 @@ impl Game {
         self.shake = (self.shake - dt).max(0.0);
         self.flash = (self.flash - dt).max(0.0);
         self.alert = (self.alert - dt).max(0.0);
+        // cards are dealt one at a time, like drawing from a deck
+        let dealing = (0..4).filter(|&i| self.hand[i].card.is_none()).min_by(|&a, &b| self.hand[a].cd.partial_cmp(&self.hand[b].cd).unwrap_or(std::cmp::Ordering::Equal));
         for si in 0..4 {
             let s = &mut self.hand[si];
             s.wig = (s.wig - dt * 3.0).max(0.0);
-            s.flip = (s.flip + dt * 3.0).min(1.0);
-            if s.card.is_none() {
+            s.flip = (s.flip + dt * 1.6).min(1.0);
+            if s.card.is_none() && dealing == Some(si) {
                 s.cd -= dt;
                 if s.cd <= 0.0 {
                     let c = self.draw_card(false);

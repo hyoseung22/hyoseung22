@@ -411,8 +411,11 @@ fn creature_tf(isl: &Island, slot: usize, e: &sim::Creature, t: f32) -> (Transfo
         }
     }
     let mut s = 1.0;
-    if e.born < 0.45 {
-        s = sim::ease_back((e.born / 0.45).clamp(0.0, 1.0)).max(0.01);
+    // a new piece is lowered onto the board and settles with a little bounce
+    if e.born < 0.9 {
+        let k = (e.born / 0.9).clamp(0.0, 1.0);
+        lift += (1.0 - k).powi(2) * 70.0;
+        s = sim::ease_back((e.born / 0.6).clamp(0.0, 1.0)).max(0.01);
     }
     if e.dying > 0.0 {
         let k = (e.dying / 0.8).clamp(0.0, 1.0);

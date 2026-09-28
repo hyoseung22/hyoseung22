@@ -1,0 +1,22 @@
+[package]
+name = "bloom-isles"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A cozy, text-free island-gardening race against bots, built with Bevy."
+
+[dependencies]
+bevy = { version = "0.16.1", features = ["wav"] }
+tiny-skia = "0.11.4"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

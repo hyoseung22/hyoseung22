@@ -1,0 +1,45 @@
+name: Bloom Isles builds
+
+on:
+  push:
+    paths:
+      - "bloom-isles/**"
+      - ".github/workflows/bloom-isles.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: bloom-isles-windows
+            exe: bloom-isles.exe
+          - os: macos-latest
+            name: bloom-isles-macos
+            exe: bloom-isles
+          - os: ubuntu-latest
+            name: bloom-isles-linux
+            exe: bloom-isles
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: bloom-isles
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bloom-isles
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: Test game rules
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: bloom-isles/target/release/${{ matrix.exe }}

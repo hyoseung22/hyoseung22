@@ -73,6 +73,7 @@ pub struct Layout {
     pub isle: R,
     pub timer: Btn,
     pub pause: Btn,
+    pub speed: Btn,
     pub mute: Btn,
     pub race: R,
     pub title_isle: R,
@@ -145,8 +146,9 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, mut l: ResMut
     l.timer = Btn { x: 34.0, y: 30.0, r: 19.0 };
     l.pause = Btn { x: w - 30.0, y: 30.0, r: 17.0 };
     l.mute = Btn { x: w - 70.0, y: 30.0, r: 17.0 };
+    l.speed = Btn { x: w - 110.0, y: 30.0, r: 17.0 };
     let rx0 = 112.0;
-    let rx1 = w - 100.0;
+    let rx1 = w - 140.0;
     l.race = R::new(rx0, 30.0, (rx1 - rx0 - 28.0).max(80.0), 14.0);
 
     // title
@@ -786,6 +788,16 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     draw_star_bar(pen, art, l, gm, state, t);
     pen.button(art, l.pause, slate, pointer.hover == Some(BtnId::Pause));
     pen.tex(&art.icon_pause, l.pause.x, l.pause.y, 1.2, Color::WHITE);
+    // speed: one arrow at normal pace, two when fast
+    let sp = l.speed;
+    let fast = gm.speed >= 2;
+    pen.button(art, sp, if fast { bc(pal::GOLD) } else { slate }, pointer.hover == Some(BtnId::Speed));
+    if fast {
+        pen.tex(&art.icon_play, sp.x - 4.0, sp.y, 0.75, Color::WHITE);
+        pen.tex(&art.icon_play, sp.x + 5.0, sp.y, 0.75, Color::WHITE);
+    } else {
+        pen.tex(&art.icon_play, sp.x + 1.5, sp.y, 0.85, Color::WHITE);
+    }
     draw_dex(pen, art, icons, l, gm, state, t);
 
     // hand
@@ -793,13 +805,13 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
         draw_card(pen, g, art, icons, l, gm, pointer, i, t);
     }
     // combo meter
-    if gm.combo >= 2 && gm.t - gm.last_place < 6.0 {
+    if gm.combo >= 2 && gm.t - gm.last_place < sim::COMBO_T {
         let c = l.cards[3];
         let (x, y) = (c.x + c.w + 12.0, c.y - 22.0);
         let pul = 1.0 + (t * 10.0).sin() * 0.06;
         let col = [pal::CREAM, pal::GOLD, 0xff9a3c, 0xff5a5a, 0xe86bff][((gm.combo as usize).saturating_sub(2)).min(4)];
         pen.circle(art, x, y, 20.0 * pul, bca(pal::SLATE, 0.9));
-        arc(g, w, h, Vec2::new(x, y), 18.0, -PI / 2.0, 1.0 - (gm.t - gm.last_place) / 6.0, bc(col));
+        arc(g, w, h, Vec2::new(x, y), 18.0, -PI / 2.0, 1.0 - (gm.t - gm.last_place) / sim::COMBO_T, bc(col));
         pen.text(x, y + 1.0, 18.0 * pul, bc(col), &format!("x{}", gm.combo));
     }
     let rb = l.reroll;

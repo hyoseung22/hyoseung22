@@ -139,7 +139,7 @@ impl Island {
         e.ty = ty;
         e.hop = 0.001;
         e.hop_dur = crate::sim::HOP_T;
-        e.move_cd = 3.0 + rng.f() * 3.0;
+        e.move_cd = 6.0 + rng.f() * 6.0;
         self.ver += 1;
     }
 
@@ -188,8 +188,8 @@ impl Island {
                 df += 0.002;
             }
             let t = &mut self.map.tiles[i];
-            t.moist += (target - t.moist) * 0.06;
-            t.fert = (t.fert + df).clamp(0.0, 1.0);
+            t.moist += (target - t.moist) * 0.035;
+            t.fert = (t.fert + df * 0.6).clamp(0.0, 1.0);
             after = after.wrapping_mul(31).wrapping_add((t.moist * 4.0) as u32 * 5 + (t.fert * 4.0) as u32);
         }
         if before != after {
@@ -244,10 +244,10 @@ impl Island {
                 Some(to) => {
                     t.ctr += TICK;
                     let need = match to {
-                        Terr::Mead => 10.0,
-                        Terr::Snow | Terr::Dune => 9.0,
-                        Terr::Pond | Terr::Grass | Terr::Lake if rain || drought => 7.0,
-                        _ => 14.0,
+                        Terr::Mead => 20.0,
+                        Terr::Snow | Terr::Dune => 18.0,
+                        Terr::Pond | Terr::Grass | Terr::Lake if rain || drought => 14.0,
+                        _ => 28.0,
                     };
                     if t.ctr > need && change.is_none() {
                         change = Some((i, to));
@@ -407,11 +407,11 @@ impl Island {
             ev.push(Ev::Burst { isl, x, y, kind, n: 8 });
         }
         if b == Biome::Volcano {
-            self.erupt_t = 12.0;
+            self.erupt_t = 20.0;
         }
         self.biomes.push((b, tile));
         for (k, &sp) in b.natives().iter().enumerate() {
-            self.arrivals.push((1.6 + k as f32 * 1.5, sp, tile));
+            self.arrivals.push((2.5 + k as f32 * 3.0, sp, tile));
         }
         let (x, y) = (self.map.tiles[tile].x, self.map.tiles[tile].y);
         ev.push(Ev::Biome { isl, biome: b, x, y });
@@ -470,7 +470,7 @@ impl Island {
         if self.erupt_t > 0.0 {
             return;
         }
-        self.erupt_t = 24.0 + rng.f() * 14.0;
+        self.erupt_t = 50.0 + rng.f() * 25.0;
         let v = *rng.pick(&vents);
         let (x, y) = (self.map.tiles[v].x, self.map.tiles[v].y);
         ev.push(Ev::Erupt { isl, x, y });
@@ -574,7 +574,7 @@ impl Island {
                         Sp::Camel => 0.007,
                         _ => 0.02,
                     };
-                    e.fed = (e.fed - burn * dt).max(0.0);
+                    e.fed = (e.fed - burn * 0.5 * dt).max(0.0);
                     if sp == Sp::Frog && rain {
                         e.fed = (e.fed + 0.02).min(1.0);
                     }
@@ -595,7 +595,7 @@ impl Island {
                     }
                 }
             }
-            if self.ents[i].starve > 20.0 {
+            if self.ents[i].starve > 40.0 {
                 let id = self.ents[i].id;
                 self.kill(isl, id, Death::Wither, ev);
                 i += 1;
@@ -613,7 +613,7 @@ impl Island {
                 i += 1;
                 continue;
             }
-            self.ents[i].act = 1.5 + rng.f() * 2.0;
+            self.ents[i].act = 3.5 + rng.f() * 3.5;
             match sp {
                 Sp::Rabbit => self.graze(isl, i, &[Sp::Flower], viewed, ev),
                 Sp::Deer => self.graze(isl, i, &[Sp::Fern, Sp::Flower], viewed, ev),
@@ -731,7 +731,7 @@ impl Island {
             _ => None,
         });
         let Some(j) = target else { return };
-        self.ents[j].polli = if self.ents[j].sp == Sp::Bush { 30.0 } else { 22.0 };
+        self.ents[j].polli = if self.ents[j].sp == Sp::Bush { 55.0 } else { 40.0 };
         self.ents[i].fed = (self.ents[i].fed + 0.4).min(1.0);
         let to = self.pos(j);
         self.link(isl, Link::Pollinate, i, to, true, ev);
@@ -783,7 +783,7 @@ impl Island {
         if let Some(j) = fruit {
             self.ents[j].polli = 0.0;
             self.ents[i].fed = (self.ents[i].fed + 0.5).min(1.0);
-            self.ents[i].seed = 4.0 + rng.f() * 4.0;
+            self.ents[i].seed = 8.0 + rng.f() * 6.0;
             let to = self.pos(j);
             self.link(isl, Link::Peck, i, to, true, ev);
             if viewed {
@@ -925,7 +925,7 @@ mod tests {
             g.auto = true;
             let vers: Vec<u32> = g.isl.iter().map(|i| i.map_ver).collect();
             let mut steps = 0;
-            while !g.over && steps < 20 * 320 {
+            while !g.over && steps < 20 * (crate::sim::DUR as usize + 40) {
                 g.update(0.05);
                 for e in g.ev.drain(..) {
                     match e {

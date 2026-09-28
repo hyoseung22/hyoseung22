@@ -8,17 +8,19 @@ use crate::rng::Rng;
 pub const THRIVE: f32 = 0.72;
 pub use crate::eco::Biome;
 pub const SAD: f32 = 0.32;
-pub const DUR: f32 = 300.0;
+pub const DUR: f32 = 480.0;
 pub const GOAL: f32 = 300.0;
-pub const CARD_CD: f32 = 3.6;
-pub const STORM_T: f32 = 8.0;
-pub const WITHER_T: f32 = 16.0;
-pub const REROLL_CD: f32 = 7.0;
+pub const CARD_CD: f32 = 8.0;
+pub const STORM_T: f32 = 12.0;
+pub const WITHER_T: f32 = 28.0;
+pub const REROLL_CD: f32 = 14.0;
+/// Seconds between good placements that keep a combo going.
+pub const COMBO_T: f32 = 10.0;
 /// Island index used for the title-screen island.
 pub const TITLE: usize = 9;
 
 /// Seconds between natural hazards (beetle swarms, thunderclouds) per difficulty; 0 = none.
-pub const HAZARD_EVERY: [f32; 3] = [0.0, 62.0, 38.0];
+pub const HAZARD_EVERY: [f32; 3] = [0.0, 110.0, 70.0];
 /// Score needed for one, two and three stars.
 pub const STAR_AT: [f32; 3] = [140.0, 240.0, 340.0];
 
@@ -473,7 +475,7 @@ impl Island {
             hd: 0.5,
             sad_t: 0.0,
             thr_t: 0.0,
-            next: 6.0 + rng.f() * 6.0,
+            next: 12.0 + rng.f() * 10.0,
             born: 0.0,
             dying: 0.0,
             how: Death::Dig,
@@ -485,7 +487,7 @@ impl Island {
             fy: 0.0,
             tx: 0.0,
             ty: 0.0,
-            move_cd: 2.5 + rng.f() * 4.0,
+            move_cd: 5.0 + rng.f() * 6.0,
             jump: 0.0,
             thriving: false,
             fed: 0.75,
@@ -494,7 +496,7 @@ impl Island {
             hp: 1.0,
             scorch: 0.0,
             seed: 0.0,
-            act: 1.0 + rng.f() * 2.0,
+            act: 2.0 + rng.f() * 3.0,
         };
         let (x, y) = (e.x, e.y);
         self.map.tiles[tile].occ = Some((id, sp));
@@ -662,7 +664,7 @@ impl Island {
                 let (x, y, head, plant) = (e.x, e.y, def(e.sp).head, def(e.sp).plant);
                 if e.thr_t > e.next {
                     e.thr_t = 0.0;
-                    e.next = 7.0 + rng.f() * 7.0;
+                    e.next = 16.0 + rng.f() * 14.0;
                     if self.try_spawn(isl, i, rng, ev) && viewed {
                         ev.push(Ev::Sfx(Sfx::Sprout));
                     }
@@ -794,11 +796,11 @@ impl Island {
                     let d = dx.hypot(dy);
                     if d > 5.0 {
                         b.dir = dy.atan2(dx);
-                        b.x += dx / d * 38.0 * dt;
-                        b.y += dy / d * 38.0 * dt;
+                        b.x += dx / d * 24.0 * dt;
+                        b.y += dy / d * 24.0 * dt;
                     } else {
                         b.eat += dt;
-                        if b.eat >= 3.0 {
+                        if b.eat >= 5.0 {
                             b.tgt = None;
                             b.eat = 0.0;
                             self.kill(isl, id, Death::Eaten, ev);
@@ -811,8 +813,8 @@ impl Island {
                 None => {
                     b.tgt = None;
                     b.dir += (rng.f() - 0.5) * dt * 4.0;
-                    b.x += b.dir.cos() * 20.0 * dt;
-                    b.y += b.dir.sin() * 14.0 * dt;
+                    b.x += b.dir.cos() * 13.0 * dt;
+                    b.y += b.dir.sin() * 9.0 * dt;
                 }
             }
         }
@@ -820,7 +822,7 @@ impl Island {
     }
 }
 
-pub const HOP_T: f32 = 0.5;
+pub const HOP_T: f32 = 0.75;
 
 impl Island {
     /// Animals hop to a neighbouring tile when it suits them better, like pieces on a board.
@@ -855,7 +857,7 @@ impl Island {
             if e.move_cd > 0.0 {
                 continue;
             }
-            e.move_cd = 3.0 + rng.f() * 5.0;
+            e.move_cd = 7.0 + rng.f() * 8.0;
             let (sp, from, id) = (e.sp, e.tile, e.id);
             self.map.tiles[from].occ = None;
             let cur = self.happ(from, sp, None);
@@ -946,11 +948,11 @@ impl Island {
         if self.whale_t > 0.0 || self.map.edge.is_empty() {
             return;
         }
-        self.whale_t = 40.0 + rng.f() * 30.0;
+        self.whale_t = 75.0 + rng.f() * 40.0;
         let t = &self.map.tiles[*rng.pick(&self.map.edge)];
         let (cx, cy) = (self.map.b.cx(), self.map.b.cy());
         let d = Vec2f::new(t.x - cx, (t.y - cy) / SQ).norm();
-        self.whale = Some(Whale { x: t.x + d.0 * 80.0, y: t.y + d.1 * 80.0 * SQ, t: 0.0, dur: 8.0, caught: false, gone: 0.0, bot: None });
+        self.whale = Some(Whale { x: t.x + d.0 * 80.0, y: t.y + d.1 * 80.0 * SQ, t: 0.0, dur: 12.0, caught: false, gone: 0.0, bot: None });
         if isl != TITLE {
             ev.push(Ev::Sfx(Sfx::Whale));
         }
@@ -1077,6 +1079,8 @@ pub struct Game {
     pub stars: u8,
     /// A simple autopilot plays the cards (tests and screenshots).
     pub auto: bool,
+    /// Game speed multiplier chosen by the player (1 or 2).
+    pub speed: u8,
     think: f32,
     cer: u8,
 }
@@ -1107,7 +1111,7 @@ impl Game {
             combo: 0,
             last_place: -10.0,
             weather: Weather::Clear,
-            weather_t: 30.0,
+            weather_t: 50.0,
             forecast: Weather::Rain,
             hazard_t: 0.0,
             biomes_dealt: 0,
@@ -1116,11 +1120,12 @@ impl Game {
             final_score: 0.0,
             stars: 0,
             auto: false,
+            speed: 1,
             think: 1.0,
             cer: 0,
         };
         g.hazard_t = HAZARD_EVERY[g.diff] * 0.8;
-        g.isl[0].whale_t = 25.0 + g.rng.f() * 25.0;
+        g.isl[0].whale_t = 50.0 + g.rng.f() * 40.0;
         for _ in 0..4 {
             let c = g.draw_card(true);
             g.hand.push(Slot { card: Some(c), cd: 0.0, wig: 0.0, flip: 0.0 });
@@ -1238,7 +1243,7 @@ impl Game {
             }
         }
         if value >= 2.0 {
-            self.combo = if self.t - self.last_place < 6.0 { self.combo + 1 } else { 1 };
+            self.combo = if self.t - self.last_place < COMBO_T { self.combo + 1 } else { 1 };
             self.last_place = self.t;
         } else {
             self.combo = 0;
@@ -1367,9 +1372,9 @@ impl Game {
         }
         self.weather = self.forecast;
         self.weather_t = match self.weather {
-            Weather::Clear => 22.0 + self.rng.f() * 14.0,
-            Weather::Wind => 12.0 + self.rng.f() * 6.0,
-            _ => 16.0 + self.rng.f() * 8.0,
+            Weather::Clear => 45.0 + self.rng.f() * 25.0,
+            Weather::Wind => 25.0 + self.rng.f() * 10.0,
+            _ => 32.0 + self.rng.f() * 16.0,
         };
         self.forecast = if self.weather == Weather::Clear { *self.rng.pick(&[Weather::Rain, Weather::Rain, Weather::Drought, Weather::Wind]) } else { Weather::Clear };
         self.ev.push(Ev::Weather(self.weather));
@@ -1398,7 +1403,7 @@ impl Game {
         if self.think > 0.0 {
             return;
         }
-        self.think = 1.1 + self.rng.f() * 1.2;
+        self.think = 2.5 + self.rng.f() * 2.5;
         if let Some(id) = self.isl[0].storms.iter().find(|s| s.active() && s.t > 0.6).map(|s| s.id) {
             for _ in 0..5 {
                 self.tap_storm(id);
@@ -1596,7 +1601,7 @@ mod tests {
         for seed in 1..9 {
             let mut g = auto_game(1, seed * 977);
             let mut steps = 0;
-            while !g.over && steps < 20 * 400 {
+            while !g.over && steps < 20 * (DUR as usize + 60) {
                 g.update(0.05);
                 g.ev.clear();
                 steps += 1;

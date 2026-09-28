@@ -16,6 +16,7 @@ pub enum BtnId {
     Quit,
     Mute,
     Pause,
+    Speed,
     Resume,
     PauseHome,
     Reroll,
@@ -87,6 +88,8 @@ fn button_at(l: &Layout, scene: Scene, paused: bool, p: Vec2) -> Option<BtnId> {
         Scene::Play => {
             if l.pause.hit(p) {
                 Some(BtnId::Pause)
+            } else if l.speed.hit(p) {
+                Some(BtnId::Speed)
             } else if l.reroll.hit(p) {
                 Some(BtnId::Reroll)
             } else if l.shovel.hit(p) {
@@ -220,6 +223,12 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
             }
             BtnId::PauseHome => {
                 session.to_title();
+                sfx(pending, Sfx::Click);
+            }
+            BtnId::Speed => {
+                if let Some(g) = session.game.as_mut() {
+                    g.speed = if g.speed >= 2 { 1 } else { 2 };
+                }
                 sfx(pending, Sfx::Click);
             }
             BtnId::Pause => {
@@ -383,6 +392,15 @@ pub fn keyboard_system(
             let Some(g) = session.game.as_mut() else { return };
             if lost_focus {
                 g.paused = true;
+            }
+            // space pauses and resumes, like a board game on the table
+            if keys.just_pressed(KeyCode::Space) {
+                g.paused = !g.paused;
+                sfx(&mut pending, Sfx::Click);
+            }
+            if keys.just_pressed(KeyCode::Tab) && !g.paused {
+                g.speed = if g.speed >= 2 { 1 } else { 2 };
+                sfx(&mut pending, Sfx::Click);
             }
             if keys.just_pressed(KeyCode::Escape) {
                 if g.sel.is_some() || g.shovel {

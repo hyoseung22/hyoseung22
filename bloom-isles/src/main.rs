@@ -258,7 +258,11 @@ pub fn tick(time: Res<Time>, mut session: ResMut<Session>, mut pending: ResMut<P
         Scene::Play | Scene::End => {
             let playing = session.scene == Scene::Play;
             let Some(g) = session.game.as_mut() else { return };
-            g.update(dt);
+            // the chosen speed runs extra steps; the results show always plays at normal speed
+            let steps = if g.over { 1 } else { g.speed.max(1) };
+            for _ in 0..steps {
+                g.update(dt);
+            }
             let events: Vec<Ev> = g.ev.drain(..).collect();
             for e in events {
                 match e {
@@ -343,8 +347,8 @@ fn play_sounds(
     // a wandering lute melody in D dorian over a slow drone
     *music_t -= time.delta_secs();
     if *music_t <= 0.0 {
-        *music_t = *rng.pick(&[0.36, 0.36, 0.54, 0.72]);
-        if rng.chance(0.8) {
+        *music_t = *rng.pick(&[0.6, 0.6, 0.9, 1.2]);
+        if rng.chance(0.7) {
             let step = *rng.pick(&[-2i32, -1, -1, 1, 1, 2, 0]);
             *note = (*note as i32 + step).clamp(0, 7) as usize;
             commands.spawn((AudioPlayer::new(sounds.notes[*note].clone()), PlaybackSettings::DESPAWN));

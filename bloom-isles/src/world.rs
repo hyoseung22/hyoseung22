@@ -232,9 +232,19 @@ pub fn update_cameras(
 ) {
     let (w, h) = (layout.w, layout.h);
     let t = session.t;
+    let weather = session.game.as_ref().filter(|_| session.scene == Scene::Play).map(|g| g.weather).unwrap_or(sim::Weather::Clear);
+    let sea = match weather {
+        sim::Weather::Rain => 0x1f6c85,
+        sim::Weather::Drought => 0x3294a6,
+        sim::Weather::Wind => 0x2680a0,
+        sim::Weather::Clear => pal::SEA,
+    };
     for (mut tf, mut spr) in &mut bg {
         spr.custom_size = Some(Vec2::new(w + 4.0, h + 4.0));
-        spr.color = bc(pal::SEA);
+        let cur = spr.color.to_srgba();
+        let tgt = bc(sea).to_srgba();
+        let k = 1.0 - (-time.delta_secs() * 1.5).exp();
+        spr.color = Color::srgb(cur.red + (tgt.red - cur.red) * k, cur.green + (tgt.green - cur.green) * k, cur.blue + (tgt.blue - cur.blue) * k);
         tf.translation = Vec3::ZERO;
     }
     for (wv, mut tf) in &mut waves {
@@ -313,8 +323,8 @@ pub struct IslandPart(pub usize);
 pub struct VisIndex {
     gen: u32,
     title: bool,
-    /// slot -> (map version, lushness step)
-    built: HashMap<usize, (u32, u8)>,
+    /// slot -> (map version, lushness step, soil version, time built)
+    built: HashMap<usize, (u32, u8, u32, f32)>,
     map: HashMap<(usize, u32), (Entity, Entity)>,
 }
 
@@ -356,12 +366,19 @@ pub fn sync_islands(
         index.title = title;
     }
     let islands: Vec<(usize, &Island)> = if title { vec![(TITLE, &session.title)] } else { session.game.as_ref().unwrap().isl.iter().enumerate().collect() };
+    let mut rebuilt = false;
     for (slot, isl) in &islands {
         let step = (isl.lush.clamp(0.0, 1.0) * 10.0).round() as u8;
-        let key = (isl.map_ver, step);
-        if index.built.get(slot) == Some(&key) {
+        let urgent = match index.built.get(slot) {
+            None => true,
+            Some(b) => b.0 != isl.map_ver || b.1 != step,
+        };
+        // soil tints drift constantly: repaint at most one island per frame, each every 2 s
+        let soil_stale = index.built.get(slot).map(|b| b.2 != isl.soil_ver && session.t - b.3 > 2.0).unwrap_or(false);
+        if !urgent && !(soil_stale && !rebuilt) {
             continue;
         }
+        rebuilt = true;
         // first build, the island grew, or it got noticeably lusher
         for (e, part) in &parts {
             if part.map(|p| p.0 == *slot).unwrap_or(false) {
@@ -369,7 +386,7 @@ pub fn sync_islands(
             }
         }
         build_island(&mut commands, &mut meshes, &m3, *slot, isl, step as f32 / 10.0);
-        index.built.insert(*slot, key);
+        index.built.insert(*slot, (isl.map_ver, step, isl.soil_ver, session.t));
     }
 }
 

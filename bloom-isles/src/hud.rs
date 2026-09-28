@@ -6,7 +6,7 @@ use crate::eco::def;
 use crate::input::{BtnId, Pointer};
 use crate::island::{Terr, HS, SQ};
 use crate::rng::Rng;
-use crate::sim::{self, ease_back, ease_io, lerp, state_of, Card, Ev, Game, Sfx, DUR, REROLL_CD, WITHER_T};
+use crate::sim::{self, ease_back, ease_io, lerp, state_of, Card, Ev, Game, Link, Sfx, Weather, DUR, REROLL_CD, WITHER_T};
 use crate::eco::need_w;
 use crate::world::{ground_h, Icons, MainView};
 use crate::{Ephemeral, Fonts, Pending, Scene, Session, Settings, LAYER_HUD};
@@ -132,7 +132,7 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<
     l.timer = Btn { x: 34.0, y: 30.0, r: 19.0 };
     l.pause = Btn { x: w - 30.0, y: 30.0, r: 17.0 };
     l.mute = Btn { x: w - 70.0, y: 30.0, r: 17.0 };
-    let rx0 = 70.0;
+    let rx0 = 112.0;
     let rx1 = if port { w - 100.0 } else { (pl.x + pl.w - 20.0).min(w - 110.0) };
     l.race = R::new(rx0, 30.0, (rx1 - rx0 - 28.0).max(80.0), 14.0);
 
@@ -340,6 +340,12 @@ pub struct HudState {
     rank_flash: Option<(bool, f32)>,
     crowd_seed: u32,
     popups: Vec<(crate::world::PopupReq, f32)>,
+    /// (island, kind, from, to, ok, age)
+    links: Vec<(usize, Link, Vec2, Vec2, bool, f32)>,
+    /// (island, where, age)
+    fears: Vec<(usize, Vec2, f32)>,
+    /// A weather change being announced: (weather, age)
+    banner: Option<(Weather, f32)>,
 }
 
 impl HudState {
@@ -444,6 +450,33 @@ pub fn draw_hud(
         }
     }
     pending.ev.retain(|e| !matches!(e, Ev::Rank { .. }));
+    for e in pending.ev.iter() {
+        match e {
+            Ev::Link { isl, kind, ax, ay, bx, by, ok } => state.links.push((*isl, *kind, Vec2::new(*ax, *ay), Vec2::new(*bx, *by), *ok, 0.0)),
+            Ev::Fear { isl, x, y } => state.fears.push((*isl, Vec2::new(*x, *y), 0.0)),
+            Ev::Weather(w) => state.banner = Some((*w, 0.0)),
+            _ => {}
+        }
+    }
+    pending.ev.retain(|e| !matches!(e, Ev::Link { .. } | Ev::Fear { .. } | Ev::Weather(_)));
+    for l in &mut state.links {
+        l.5 += dt;
+    }
+    state.links.retain(|l| l.5 < 1.3);
+    if state.links.len() > 120 {
+        let n = state.links.len() - 120;
+        state.links.drain(..n);
+    }
+    for f in &mut state.fears {
+        f.2 += dt;
+    }
+    state.fears.retain(|f| f.2 < 1.4);
+    if let Some(b) = state.banner.as_mut() {
+        b.1 += dt;
+    }
+    if state.banner.map(|b| b.1 > 2.6).unwrap_or(false) {
+        state.banner = None;
+    }
     let new_pops: Vec<_> = pending.popups.drain(..).map(|p| (p, 0.0)).collect();
     state.popups.extend(new_pops);
     for p in &mut state.popups {
@@ -558,6 +591,7 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     let (w, h) = (l.w, l.h);
     let slate = bc(pal::SLATE);
     let me = &gm.players[0];
+    draw_weather_fx(pen, g, art, l, gm, t);
     draw_world_overlays(pen, g, art, icons, l, gm, view, pointer, state, t);
 
     if gm.view != 0 {
@@ -592,6 +626,29 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icons: &Icons,
     let sa = -PI / 2.0 - left * TAU;
     let sun = tm.c() + Vec2::new(sa.cos(), -sa.sin()) * (tm.r - 5.0);
     pen.circle(art, sun.x, sun.y, 4.5, bc(0xffe08a));
+
+    // weather now, and what comes next when it is close
+    let wi = |w: Weather| match w {
+        Weather::Clear => 0,
+        Weather::Rain => 1,
+        Weather::Drought => 2,
+        Weather::Wind => 3,
+    };
+    let wb = Btn { x: tm.x + 40.0, y: tm.y, r: 16.0 };
+    pen.button(art, wb, slate, false);
+    pen.tex(&art.weather[wi(gm.weather)], wb.x, wb.y, 0.8, Color::WHITE);
+    if gm.weather_t < 8.0 {
+        let blink = if (t * 4.0).sin() > 0.0 { 1.0 } else { 0.5 };
+        pen.circle(art, wb.x + 14.0, wb.y + 14.0, 10.0, bca(pal::SLATE, 0.95));
+        pen.tex(&art.weather[wi(gm.forecast)], wb.x + 14.0, wb.y + 14.0, 0.45, Color::WHITE.with_alpha(blink));
+    }
+    if let Some((w, age)) = state.banner {
+        let pop = if age < 0.3 { ease_back(age / 0.3) } else { 1.0 };
+        let a = if age > 2.0 { (2.6 - age) / 0.6 } else { 1.0 };
+        let c = Vec2::new(l.isle.x + l.isle.w / 2.0, l.isle.y + 60.0);
+        pen.circle(art, c.x, c.y, 34.0 * pop, bca(pal::SLATE, 0.85 * a));
+        pen.tex(&art.weather[wi(w)], c.x, c.y, 1.7 * pop, Color::WHITE.with_alpha(a));
+    }
 
     // race to the flag
     let rc = l.race;
@@ -1054,12 +1111,79 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
     let isl = &gm.isl[slot];
     let (w, h) = (l.w, l.h);
     let vs = view.s;
-    // sad creatures carry a little frown badge
+    // badges: sad, hungry, pollinated or fruiting, scorched
     for e in &isl.ents {
-        if e.dying == 0.0 && state_of(e.hd) == 0 {
-            let top = ent_points(isl, view, e).1;
-            pen.tex(&art.faces[0], top.x, top.y - 12.0 + (t * 3.0 + e.ph).sin() * 1.5, 0.6, Color::WHITE.with_alpha(0.92));
+        if e.dying > 0.0 {
+            continue;
         }
+        let top = ent_points(isl, view, e).1;
+        let bob = (t * 3.0 + e.ph).sin() * 1.5;
+        if crate::ecology::hungry(e) {
+            pen.tex(&art.food, top.x + 9.0, top.y - 12.0 + bob, 0.75, Color::srgba(0.75, 0.75, 0.75, 0.95));
+        }
+        if state_of(e.hd) == 0 {
+            pen.tex(&art.faces[0], top.x - 4.0, top.y - 12.0 + bob, 0.6, Color::WHITE.with_alpha(0.92));
+        }
+        if e.polli > 0.0 {
+            let tw = ((t * 5.0 + e.ph).sin() * 0.5 + 0.5) * 0.8 + 0.2;
+            pen.tex(&art.spark, top.x + 6.0, top.y - 4.0, 1.1, bca(pal::GOLD, tw));
+        }
+        if e.scorch > 0.0 {
+            for k in 0..3 {
+                let q = (t * 0.8 + k as f32 / 3.0 + e.ph) % 1.0;
+                pen.circle(art, top.x + (k as f32 - 1.0) * 5.0, top.y - q * 30.0, 3.0 + q * 4.0, bca(0x4a4f5a, 0.6 * (1.0 - q)));
+            }
+        }
+    }
+    // interactions: a line from actor to target, coloured by kind
+    for (sl, kind, a, b, ok, age) in &state.links {
+        if *sl != slot {
+            continue;
+        }
+        let k = (age / 1.3).clamp(0.0, 1.0);
+        let fade = 1.0 - k;
+        let (col, icon): (u32, Option<&Tex>) = match kind {
+            Link::Pollinate => (pal::GOLD, Some(&art.spark)),
+            Link::Graze => (0x7fc76f, Some(&art.glyph_leaf)),
+            Link::Hunt => (if *ok { pal::RED } else { 0xf0a0a0 }, Some(&art.glyph_paw)),
+            Link::Tongue => (0xff7fb0, None),
+            Link::Peck => (0xf2a33a, None),
+            Link::Seed => (0xb8864a, Some(&art.sprout_on)),
+            Link::Rod => (0xffe066, Some(&art.bolt)),
+            Link::Pinch => (0xe0533d, None),
+            Link::Compost => (0xa27ad0, Some(&art.sprout_on)),
+        };
+        let pa = view.to_screen_h(a.x, a.y, 14.0);
+        let pb = view.to_screen_h(b.x, b.y, 10.0);
+        let lift = if matches!(kind, Link::Seed | Link::Compost | Link::Pollinate) { 30.0 } else { 12.0 };
+        let mid = (pa + pb) / 2.0 - Vec2::new(0.0, lift);
+        let grow = (age / 0.25).clamp(0.0, 1.0);
+        let pt = |q: f32| pa * (1.0 - q) * (1.0 - q) + mid * 2.0 * q * (1.0 - q) + pb * q * q;
+        let n = 16;
+        for i in 0..n {
+            let (q0, q1) = (i as f32 / n as f32 * grow, (i as f32 + 0.7) / n as f32 * grow);
+            if matches!(kind, Link::Pollinate | Link::Seed | Link::Compost) && i % 2 == 1 {
+                continue;
+            }
+            g.line_2d(to_screen(w, h, pt(q0)), to_screen(w, h, pt(q1)), bca(col, fade));
+        }
+        if let Some(icon) = icon {
+            let p = pt(0.5 * grow);
+            pen.tex(icon, p.x, p.y, 0.9, Color::WHITE.with_alpha(fade));
+        }
+        if matches!(kind, Link::Hunt) && !*ok {
+            pen.tex(&art.heart_broken, pb.x, pb.y - 16.0, 0.9, Color::WHITE.with_alpha(fade));
+        }
+    }
+    for (sl, p, age) in &state.fears {
+        if *sl != slot {
+            continue;
+        }
+        let gh = ground_h(isl, p.x, p.y);
+        let q = view.to_screen_h(p.x, p.y, gh + 40.0);
+        let pop = if *age < 0.2 { ease_back(age / 0.2) } else { 1.0 };
+        let shake = (age * 40.0).sin() * 2.0 * (1.0 - age / 1.4);
+        pen.tex(&art.alert, q.x + shake, q.y, pop * 1.0, Color::WHITE.with_alpha((1.4 - age).min(1.0)));
     }
     if !gm.paused {
         for s in &isl.storms {
@@ -1132,6 +1256,8 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
                     pen.tex(icon, mid.x, mid.y, vs * crate::world::PIECE, Color::WHITE.with_alpha(0.8));
                     let top = view.to_screen_h(tl.x, tl.y, gh + head);
                     pen.tex(&art.faces[state_of(hh) as usize], top.x, top.y - 18.0, 1.0, Color::WHITE);
+                    let foot = view.to_screen_h(tl.x, tl.y, gh);
+                    env_pill(pen, art, isl, tile, None, foot + Vec2::new(0.0, 26.0));
                 } else {
                     let o = view.to_screen_h(tl.x, tl.y, gh);
                     g.line_2d(to_screen(w, h, o + Vec2::new(-8.0, -6.0)), to_screen(w, h, o + Vec2::new(8.0, 6.0)), bc(pal::RED));
@@ -1167,6 +1293,8 @@ fn draw_world_overlays(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, icon
                     relation_lines(pen, g, art, l, isl, view, e.tile, sp, mid, t);
                     let st = state_of(e.h);
                     pen.tex(&art.faces[st as usize], top.x, top.y - 18.0, 1.0, Color::WHITE);
+                    let foot = view.to_screen_h(e.x, e.y, ground_h(isl, e.x, e.y));
+                    env_pill(pen, art, isl, e.tile, Some(e), foot + Vec2::new(0.0, 26.0));
                     if st == 0 && e.sad_t > 0.0 {
                         arc(g, w, h, top - Vec2::new(0.0, 18.0), 14.0, -PI / 2.0, 1.0 - e.sad_t / WITHER_T, bc(pal::RED));
                     }
@@ -1202,5 +1330,89 @@ fn draw_gallery(pen: &mut Pen, art: &Art, icons: &Icons, l: &Layout) {
         let (cx, cy) = (20.0 + (i % cols) as f32 * cell + cell / 2.0, 20.0 + (i / cols) as f32 * cell * 0.95 + cell / 2.0);
         pen.rrect(art, cx - cell * 0.46, cy - cell * 0.44, cell * 0.92, cell * 0.88, 12.0, Some(bc(0xf6f1e6)), Some(bca(pal::SLATE, 0.25)));
         pen.tex(t, cx, cy, cell * 0.8 / t.size.x.max(1.0), Color::WHITE);
+    }
+}
+
+/// Little dark pill showing a tile's moisture and fertility (three pips each),
+/// shade, and for animals how fed they are.
+fn env_pill(pen: &mut Pen, art: &Art, isl: &crate::sim::Island, tile: usize, e: Option<&crate::sim::Creature>, at: Vec2) {
+    let t = &isl.map.tiles[tile];
+    let shade = isl.shade_at(tile, None);
+    let animal = e.map(|e| !def(e.sp).plant).unwrap_or(false);
+    let wdt = 118.0 + if shade > 0.0 { 20.0 } else { 0.0 } + if animal { 52.0 } else { 0.0 };
+    let (x0, y0) = (at.x - wdt / 2.0, at.y - 12.0);
+    pen.rrect(art, x0, y0, wdt, 24.0, 12.0, Some(bca(pal::SLATE, 0.88)), Some(bca(pal::CREAM, 0.2)));
+    let mut x = x0 + 14.0;
+    let lvl = |v: f32| ((v * 3.0).round() as i32).clamp(0, 3);
+    let m = if t.t == crate::island::Terr::Pond { 3 } else { lvl(t.moist) };
+    for k in 0..3 {
+        pen.tex(&art.drop_icon, x, at.y, 0.7, if k < m { bc(0x6fc3ff) } else { bca(pal::CREAM, 0.2) });
+        x += 12.0;
+    }
+    x += 6.0;
+    let f = lvl(t.fert);
+    for k in 0..3 {
+        pen.tex(if k < f { &art.sprout_on } else { &art.sprout_off }, x, at.y, 0.62, Color::WHITE.with_alpha(if k < f { 1.0 } else { 0.35 }));
+        x += 13.0;
+    }
+    if shade > 0.0 {
+        x += 4.0;
+        pen.tex(&art.shade_icon, x, at.y, 0.75, Color::WHITE);
+        x += 16.0;
+    }
+    if let Some(e) = e.filter(|_| animal) {
+        x += 6.0;
+        pen.tex(&art.food, x, at.y, 0.7, Color::WHITE);
+        let bw = 28.0;
+        pen.rect(x + 9.0, at.y - 3.0, bw, 6.0, art, bca(pal::CREAM, 0.2));
+        let col = if e.fed < 0.2 { pal::RED } else if e.fed < 0.5 { pal::AMBER } else { pal::GREEN };
+        pen.rect(x + 9.0, at.y - 3.0, bw * e.fed.clamp(0.0, 1.0), 6.0, art, bc(col));
+    }
+}
+
+/// Rain streaks, wind gusts, heat haze.
+fn draw_weather_fx(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, t: f32) {
+    let (w, h) = (l.w, l.h);
+    let a = l.isle;
+    let hash = |i: u32, k: u32| ((i.wrapping_mul(2654435761).wrapping_add(k.wrapping_mul(40503))) % 10007) as f32 / 10007.0;
+    // ease weather in and out over its first and last two seconds
+    let strength = (gm.weather_t / 2.0).clamp(0.0, 1.0);
+    match gm.weather {
+        Weather::Rain => {
+            for i in 0..110u32 {
+                let x = a.x + ((hash(i, 1) * a.w + t * 70.0) % a.w);
+                let y = a.y + ((hash(i, 2) * a.h + t * (700.0 + hash(i, 3) * 300.0)) % a.h);
+                g.line_2d(to_screen(w, h, Vec2::new(x, y)), to_screen(w, h, Vec2::new(x - 5.0, y + 15.0)), bca(0xcfe8ff, 0.45 * strength));
+            }
+        }
+        Weather::Wind => {
+            for i in 0..22u32 {
+                let y = a.y + hash(i, 4) * a.h;
+                let x = a.x + ((hash(i, 5) * a.w + t * (420.0 + hash(i, 6) * 200.0)) % (a.w + 200.0)) - 100.0;
+                let len = 50.0 + hash(i, 7) * 60.0;
+                let pts: Vec<Vec2> = (0..=8).map(|k| {
+                    let q = k as f32 / 8.0;
+                    to_screen(w, h, Vec2::new(x + q * len, y + (q * 6.0 + t * 3.0 + i as f32).sin() * 3.0))
+                }).collect();
+                g.linestrip_2d(pts, bca(0xffffff, 0.35 * strength));
+            }
+            for i in 0..10u32 {
+                let x = a.x + ((hash(i, 8) * a.w + t * 260.0) % a.w);
+                let y = a.y + hash(i, 9) * a.h + (t * 2.0 + i as f32).sin() * 20.0;
+                pen.tex_full(&art.glyph_leaf, x, y, Vec2::splat(0.9), t * 4.0 + i as f32, false, Color::WHITE.with_alpha(0.8 * strength));
+            }
+        }
+        Weather::Drought => {
+            pen.rect(0.0, 0.0, w, h, art, bca(0xff9a3c, 0.07 * strength));
+            for i in 0..6u32 {
+                let y = a.y + a.h * (0.15 + i as f32 * 0.13) + (t * 0.7 + i as f32).sin() * 6.0;
+                let pts: Vec<Vec2> = (0..=24).map(|k| {
+                    let q = k as f32 / 24.0;
+                    to_screen(w, h, Vec2::new(a.x + q * a.w, y + (q * 30.0 + t * 2.0 + i as f32).sin() * 2.5))
+                }).collect();
+                g.linestrip_2d(pts, bca(0xffe2b0, 0.12 * strength));
+            }
+        }
+        Weather::Clear => {}
     }
 }

@@ -280,6 +280,12 @@ pub struct Art {
     pub icon_shovel: Tex,
     pub icon_home: Tex,
     pub icon_quit: Tex,
+    /// Weather: clear, rain, drought, wind.
+    pub weather: [Tex; 4],
+    pub alert: Tex,
+    pub food: Tex,
+    pub drop_icon: Tex,
+    pub shade_icon: Tex,
 }
 
 
@@ -399,6 +405,65 @@ pub fn build_art(images: &mut Assets<Image>) -> Art {
         icon_home: make(images, 30.0, 30.0, 15.0, 15.0, r, |c| {
             c.poly(&[(-11.0, -0.5), (0.0, -11.0), (11.0, -0.5)], ICON);
             c.poly(&[(-7.5, -1.0), (7.5, -1.0), (7.5, 10.0), (2.0, 10.0), (2.0, 4.0), (-2.0, 4.0), (-2.0, 10.0), (-7.5, 10.0)], ICON);
+        }),
+        weather: [
+            make(images, 36.0, 36.0, 18.0, 18.0, r, |c| {
+                for k in 0..8 {
+                    let a = k as f32 / 8.0 * TAU;
+                    c.line(&[(a.cos() * 10.5, a.sin() * 10.5), (a.cos() * 15.0, a.sin() * 15.0)], col(0xf5c542), 2.4);
+                }
+                c.dot(0.0, 0.0, 8.0, col(0xf5c542));
+                c.dot(-2.0, -2.0, 3.0, col(0xfbe08a));
+            }),
+            make(images, 36.0, 36.0, 18.0, 18.0, r, |c| {
+                for (x, y, rr) in [(-7.0, -2.0, 7.0), (2.0, -6.0, 9.0), (9.0, -1.0, 6.5)] {
+                    c.dot(x, y, rr, col(0xcfd6de));
+                }
+                c.fill(&Some(PathBuilder::from_rect(SkRect::from_xywh(-14.0, -2.0, 29.0, 7.0).unwrap())), col(0xcfd6de));
+                for x in [-8.0, -1.0, 6.0] {
+                    c.line(&[(x, 9.0), (x - 2.0, 15.0)], col(0x6fc3ff), 2.4);
+                }
+            }),
+            make(images, 36.0, 36.0, 18.0, 18.0, r, |c| {
+                c.dot(0.0, -3.0, 9.0, col(0xf08a3a));
+                c.dot(-2.0, -5.0, 3.0, col(0xf6b36a));
+                for k in 0..3 {
+                    let y = 10.0 + k as f32 * 3.5;
+                    c.line(&[(-10.0, y), (-5.0, y - 1.5), (0.0, y), (5.0, y - 1.5), (10.0, y)], col(0xf08a3a), 1.6);
+                }
+            }),
+            make(images, 36.0, 36.0, 18.0, 18.0, r, |c| {
+                let w = col(0xdfeaf0);
+                c.line(&[(-14.0, -6.0), (4.0, -6.0), (8.0, -9.0), (5.0, -12.0)], w, 2.4);
+                c.line(&[(-14.0, 1.0), (10.0, 1.0), (14.0, -2.0), (11.0, -5.0)], w, 2.4);
+                c.line(&[(-10.0, 8.0), (4.0, 8.0), (7.0, 11.0), (4.0, 13.0)], w, 2.4);
+            }),
+        ],
+        alert: make(images, 22.0, 22.0, 11.0, 11.0, r, |c| {
+            c.dot(0.0, 0.0, 10.0, col(pal::RED));
+            c.fill(&rrect(-1.6, -6.5, 3.2, 8.5, 1.4), col(0xffffff));
+            c.dot(0.0, 5.0, 1.8, col(0xffffff));
+        }),
+        food: make(images, 22.0, 22.0, 11.0, 11.0, r, |c| {
+            c.dot(-2.5, 1.5, 6.5, col(0xd9483b));
+            c.dot(2.5, 1.5, 6.5, col(0xc93e32));
+            c.dot(-3.5, -1.0, 2.0, cola(0xffffff, 0.5));
+            c.line(&[(0.0, -4.5), (1.0, -9.0)], col(0x6b4a1f), 1.6);
+            c.poly(&[(1.0, -7.5), (6.5, -9.5), (3.0, -5.5)], 0x5fb04a);
+        }),
+        drop_icon: make(images, 16.0, 20.0, 8.0, 10.0, r, |c| {
+            let mut b = Pb::new();
+            b.m(0.0, -8.0);
+            b.q(6.5, 0.0, 5.0, 4.0);
+            b.q(3.5, 8.0, 0.0, 8.0);
+            b.q(-3.5, 8.0, -5.0, 4.0);
+            b.q(-6.5, 0.0, 0.0, -8.0);
+            b.close();
+            c.fill(&b.done(), col(0xffffff));
+        }),
+        shade_icon: make(images, 20.0, 22.0, 10.0, 11.0, r, |c| {
+            c.fill(&rrect(-1.5, 2.0, 3.0, 8.0, 1.0), col(0x8a6440));
+            c.dot(0.0, -3.0, 7.5, col(0x3f8a36));
         }),
         icon_quit: make(images, 30.0, 30.0, 15.0, 15.0, r, |c| {
             let mut b = Pb::new();

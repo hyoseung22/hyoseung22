@@ -90,6 +90,8 @@ fn run(
             g.ev.clear();
             g.players[0].bot = false;
             g.placed = 1;
+            g.weather = crate::sim::Weather::Rain;
+            g.weather_t = 12.0;
             g.players[0].hand[0].card = Some(Card::Nature(crate::eco::Sp::Bee));
             g.players[0].hand[1].card = Some(Card::Storm);
             g.sel = Some(0);
@@ -102,14 +104,20 @@ fn run(
             if let Some(best) = hints.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) {
                 let t = &g.isl[0].map.tiles[best.0];
                 ptr.pos = view.to_screen(t.x, t.y);
-                let (x, y) = (t.x, t.y);
-                g.ev.push(crate::sim::Ev::Combo { n: 4, x, y: y - 40.0 });
             }
-            let b = g.isl[0].map.b;
-            g.ev.push(crate::sim::Ev::Grow { isl: 0, tiles: vec![] });
-            g.ev.push(crate::sim::Ev::Score { isl: 0, x: b.cx() - 60.0, y: b.cy(), amt: 3 });
-            g.combo = 4;
-            g.last_place = g.t;
+            // show a burst of interactions between neighbours
+            let ents: Vec<(f32, f32)> = g.isl[0].ents.iter().map(|e| (e.x, e.y)).collect();
+            let kinds = [crate::sim::Link::Pollinate, crate::sim::Link::Graze, crate::sim::Link::Hunt, crate::sim::Link::Seed, crate::sim::Link::Tongue];
+            for (k, w) in ents.windows(2).take(10).enumerate() {
+                let ((ax, ay), (bx, by)) = (w[0], w[1]);
+                if (ax - bx).hypot(ay - by) < 120.0 {
+                    g.ev.push(crate::sim::Ev::Link { isl: 0, kind: kinds[k % kinds.len()], ax, ay, bx, by, ok: k % 3 != 0 });
+                }
+            }
+            if let Some(&(x, y)) = ents.get(3) {
+                g.ev.push(crate::sim::Ev::Fear { isl: 0, x, y });
+            }
+            g.ev.push(crate::sim::Ev::Weather(crate::sim::Weather::Rain));
         }
         4 => shot(&mut commands, &dir, "3-preview"),
         5 => {
@@ -122,9 +130,15 @@ fn run(
         7 => {
             let g = session.game.as_mut().unwrap();
             g.sel = None;
-            g.view = 2;
+            g.weather = crate::sim::Weather::Wind;
+            g.weather_t = 12.0;
+            // inspect an animal
+            g.inspect = g.isl[0].ents.iter().find(|e| !crate::eco::def(e.sp).plant && e.dying == 0.0).map(|e| e.tile);
+            if let Some(e) = g.isl[0].ents.iter_mut().find(|e| !crate::eco::def(e.sp).plant) {
+                e.fed = 0.15;
+            }
         }
-        8 => shot(&mut commands, &dir, "5-rival"),
+        8 => shot(&mut commands, &dir, "5-inspect-wind"),
         9 => {
             let g = session.game.as_mut().unwrap();
             g.view = 0;

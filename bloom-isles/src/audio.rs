@@ -153,6 +153,20 @@ impl Buf {
         }
     }
 
+    /// Filtered noise with a flat body and soft ends, for ambience that loops.
+    fn noise_bed(&mut self, dur: f32, vol: f32, f: f32, q: f32, kind: u8) {
+        let n = (dur * RF) as usize;
+        let mut bq = Biquad::new();
+        if kind == 0 { bq.lowpass(f, q) } else { bq.bandpass(f, q) }
+        for i in 0..n {
+            let t = i as f32 / RF;
+            let env = (t / 0.25).min(1.0) * ((dur - t) / 0.25).clamp(0.0, 1.0);
+            let x = self.white();
+            let y = bq.run(x);
+            *self.at(i) += y * vol * env;
+        }
+    }
+
     /// Karplus-Strong plucked string.
     fn pluck(&mut self, f: f32, dur: f32, vol: f32, delay: f32, bright: f32) {
         let start = (delay * RF) as usize;
@@ -428,6 +442,64 @@ fn synth(s: Sfx) -> Buf {
             b.tone(988.0, 0.08, Square, 0.06, 0.0, 0.0);
             b.tone(1319.0, 0.35, Square, 0.06, 0.0, 0.08);
         }
+        Sfx::Pollinate => {
+            b.tone(1760.0, 0.18, Sine, 0.05, 300.0, 0.0);
+            b.tone(2349.0, 0.22, Sine, 0.04, 0.0, 0.06);
+            b.noise(0.12, 0.03, 4000.0, 0.0, 2.0, 1);
+        }
+        Sfx::Chomp => {
+            b.noise(0.06, 0.4, 900.0, 0.0, 1.0, 0);
+            b.tone(120.0, 0.12, Square, 0.08, -40.0, 0.0);
+            b.noise(0.05, 0.3, 1400.0, 0.1, 1.0, 1);
+        }
+        Sfx::Tongue => {
+            b.tone(300.0, 0.12, Sine, 0.18, 900.0, 0.0);
+            b.noise(0.05, 0.15, 2000.0, 0.1, 1.5, 1);
+        }
+        Sfx::Peck => {
+            for i in 0..2 {
+                b.tone(1500.0, 0.03, Sine, 0.12, -600.0, i as f32 * 0.08);
+                b.noise(0.01, 0.15, 3500.0, i as f32 * 0.08, 2.0, 1);
+            }
+        }
+        Sfx::SeedDrop => {
+            b.tone(700.0, 0.12, Sine, 0.12, -400.0, 0.0);
+            b.pluck(DORIAN[5], 0.4, 0.2, 0.08, 0.6);
+        }
+        Sfx::Fear => b.tone(1200.0, 0.14, Sine, 0.08, 700.0, 0.0),
+        Sfx::Bloom => {
+            for i in 0..6 {
+                b.pluck(DORIAN[(i * 2) % 8] * if i >= 4 { 2.0 } else { 1.0 }, 0.8, 0.18, i as f32 * 0.06, 0.8);
+            }
+        }
+        Sfx::RainStart => {
+            b.noise(2.5, 0.25, 3000.0, 0.0, 0.5, 0);
+            b.tone(DORIAN[0] / 2.0, 1.5, Tri, 0.05, 0.0, 0.0);
+        }
+        Sfx::WindStart => b.noise(2.0, 0.35, 700.0, 0.0, 3.0, 1),
+        Sfx::DroughtStart => {
+            b.tone(DORIAN[4], 1.4, Sine, 0.05, 0.0, 0.0);
+            b.tone(DORIAN[4] * 1.01, 1.4, Sine, 0.05, 0.0, 0.0);
+            for i in 0..8 {
+                b.tone(4200.0, 0.05, Square, 0.01, 0.0, 0.3 + i as f32 * 0.09);
+            }
+        }
+        Sfx::ClearStart => {
+            for (i, k) in [0usize, 4, 7].iter().enumerate() {
+                b.pluck(DORIAN[*k], 1.0, 0.2, i as f32 * 0.1, 0.7);
+            }
+        }
+        Sfx::RainLoop => {
+            b.noise_bed(4.2, 0.08, 2600.0, 0.5, 0);
+            for _ in 0..90 {
+                let t = b.rng.f() * 4.0;
+                b.noise(0.01, 0.05, 5000.0, t, 1.5, 1);
+            }
+        }
+        Sfx::WindLoop => {
+            b.noise_bed(4.2, 0.35, 500.0, 3.0, 1);
+            b.noise_bed(4.2, 0.12, 1200.0, 4.0, 1);
+        }
     }
     b
 }
@@ -470,6 +542,19 @@ pub fn all_sfx() -> Vec<Sfx> {
         Sfx::Splash,
         Sfx::Whale,
         Sfx::Coin,
+        Sfx::Pollinate,
+        Sfx::Chomp,
+        Sfx::Tongue,
+        Sfx::Peck,
+        Sfx::SeedDrop,
+        Sfx::Fear,
+        Sfx::Bloom,
+        Sfx::RainStart,
+        Sfx::WindStart,
+        Sfx::DroughtStart,
+        Sfx::ClearStart,
+        Sfx::RainLoop,
+        Sfx::WindLoop,
     ];
     v.extend((2..=8).map(Sfx::Combo));
     v

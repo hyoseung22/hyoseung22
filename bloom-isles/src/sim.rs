@@ -2,6 +2,7 @@
 
 use crate::eco::{self, def, Sp, ALL};
 use crate::island::{IslandMap, SQ};
+use crate::ecology::creature_mod;
 use crate::rng::Rng;
 
 pub const THRIVE: f32 = 0.72;
@@ -61,6 +62,38 @@ impl Card {
     pub fn is_attack(self) -> bool {
         matches!(self, Card::Storm | Card::Beetle)
     }
+}
+
+/// Shared weather over all islands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Weather {
+    Clear,
+    Rain,
+    Drought,
+    Wind,
+}
+
+/// A visible interaction between two things on an island.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Link {
+    /// Bee visits a flower or bush.
+    Pollinate,
+    /// Rabbit nibbles a plant or eats berries.
+    Graze,
+    /// Fox lunges at a rabbit (caught or not).
+    Hunt,
+    /// Frog catches a beetle or bee.
+    Tongue,
+    /// Bird eats berries or a beetle.
+    Peck,
+    /// Bird drops a seed that sprouts.
+    Seed,
+    /// Lightning strikes a tree instead of the creatures around it.
+    Rod,
+    /// Crab pinches a beetle.
+    Pinch,
+    /// Something died and a mushroom grew from it.
+    Compost,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -125,6 +158,19 @@ pub enum Sfx {
     Splash,
     Whale,
     Coin,
+    Pollinate,
+    Chomp,
+    Tongue,
+    Peck,
+    SeedDrop,
+    Fear,
+    Bloom,
+    RainStart,
+    WindStart,
+    DroughtStart,
+    ClearStart,
+    RainLoop,
+    WindLoop,
 }
 
 /// Things the renderer should react to.
@@ -147,6 +193,12 @@ pub enum Ev {
     Party { isl: usize },
     /// Player moved up (true) or down in the race.
     Rank { up: bool },
+    /// Two things interacted: draw a line between them.
+    Link { isl: usize, kind: Link, ax: f32, ay: f32, bx: f32, by: f32, ok: bool },
+    /// A creature got scared (x, y is its position).
+    Fear { isl: usize, x: f32, y: f32 },
+    /// The weather changed.
+    Weather(Weather),
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +230,19 @@ pub struct Creature {
     /// Celebration jump timer.
     pub jump: f32,
     pub thriving: bool,
+    /// Animals: how full they are (0 starving .. 1 fed).
+    pub fed: f32,
+    pub starve: f32,
+    /// Plants: pollinated (flowers) or fruiting (bushes) for this many seconds.
+    pub polli: f32,
+    /// Plants: health, eaten away by grazing.
+    pub hp: f32,
+    /// Trees: scorched by lightning for this many seconds.
+    pub scorch: f32,
+    /// Birds: carrying a seed that drops when this runs out.
+    pub seed: f32,
+    /// Time until the next interaction attempt.
+    pub act: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -269,6 +334,13 @@ pub struct Island {
     pub milestone: u32,
     pub whale: Option<Whale>,
     pub whale_t: f32,
+    /// Weather this island is under (set by the game each frame).
+    pub weather: Weather,
+    pub eco_t: f32,
+    /// Tiles where something died recently; mushrooms may sprout there.
+    pub compost: Vec<usize>,
+    /// Bumped when soil moisture or fertility shifts enough to repaint.
+    pub soil_ver: u32,
 }
 
 /// Scores at which an island raises new land.
@@ -277,7 +349,7 @@ pub const PARTY_EVERY: f32 = 60.0;
 
 impl Island {
     pub fn new(map: IslandMap) -> Self {
-        Island { map, ents: vec![], storms: vec![], beetles: vec![], score: 0.0, ds: 0.0, lush: 0.0, kinds: 0, ver: 1, shield: 0.0, hit_t: 0.0, hit_by: 0, recalc_t: 0.0, next_id: 1, map_ver: 1, grow_level: 0, milestone: 0, whale: None, whale_t: 30.0 }
+        Island { map, ents: vec![], storms: vec![], beetles: vec![], score: 0.0, ds: 0.0, lush: 0.0, kinds: 0, ver: 1, shield: 0.0, hit_t: 0.0, hit_by: 0, recalc_t: 0.0, next_id: 1, map_ver: 1, grow_level: 0, milestone: 0, whale: None, whale_t: 30.0, weather: Weather::Clear, eco_t: 0.0, compost: vec![], soil_ver: 0 }
     }
 
     pub fn threatened(&self) -> bool {
@@ -313,7 +385,7 @@ impl Island {
             }
             h += n.min(need.cap) as f32 * need.w;
         }
-        h.clamp(0.0, 1.0)
+        (h + self.env_mod(tile, sp, virt)).clamp(0.0, 1.0)
     }
 
     pub fn can_place(&self, tile: usize, sp: Sp) -> bool {
@@ -342,7 +414,7 @@ impl Island {
     pub fn recalc(&mut self) {
         let mut s = 0.0;
         let mut kinds = [false; 12];
-        let hs: Vec<f32> = self.ents.iter().map(|e| if e.dying > 0.0 { e.h } else { self.happ(e.tile, e.sp, None) }).collect();
+        let hs: Vec<f32> = self.ents.iter().map(|e| if e.dying > 0.0 { e.h } else { (self.happ(e.tile, e.sp, None) + creature_mod(e)).clamp(0.0, 1.0) }).collect();
         for (e, h) in self.ents.iter_mut().zip(hs) {
             if e.dying > 0.0 {
                 continue;
@@ -384,6 +456,13 @@ impl Island {
             move_cd: 2.5 + rng.f() * 4.0,
             jump: 0.0,
             thriving: false,
+            fed: 0.75,
+            starve: 0.0,
+            polli: 0.0,
+            hp: 1.0,
+            scorch: 0.0,
+            seed: 0.0,
+            act: 1.0 + rng.f() * 2.0,
         };
         let (x, y) = (e.x, e.y);
         self.map.tiles[tile].occ = Some((id, sp));
@@ -408,6 +487,11 @@ impl Island {
         if matches!(self.map.tiles[tile].occ, Some((oid, _)) if oid == id) {
             self.map.tiles[tile].occ = None;
         }
+        if how != Death::Dig {
+            // the dead return to the soil
+            self.map.tiles[tile].fert = (self.map.tiles[tile].fert + 0.25).min(1.0);
+            self.compost.push(tile);
+        }
         self.ver += 1;
         let kind = match how {
             Death::Zap => PKind::Soot,
@@ -421,7 +505,8 @@ impl Island {
     fn try_spawn(&mut self, isl: usize, idx: usize, rng: &mut Rng, ev: &mut Vec<Ev>) -> bool {
         let (sp, tile) = (self.ents[idx].sp, self.ents[idx].tile);
         let Some(rule) = eco::spawn_rule(sp) else { return false };
-        if rng.f() > rule.p {
+        let boost = if self.ents[idx].polli > 0.0 { 1.6 } else { 1.0 } * if self.weather == Weather::Wind && def(sp).plant { 1.5 } else { 1.0 };
+        if rng.f() > rule.p * boost {
             return false;
         }
         let t = &self.map.tiles[tile];
@@ -429,7 +514,8 @@ impl Island {
             return false;
         }
         let make = *rng.pick(rule.makes);
-        let list = if rule.rad == 1 { t.n1.clone() } else { t.n2.clone() };
+        // wind carries seeds further
+        let list = if rule.rad == 1 && !(self.weather == Weather::Wind && def(sp).plant) { t.n1.clone() } else { t.n2.clone() };
         let mut best = None;
         let mut bv = f32::MIN;
         for u in list {
@@ -558,6 +644,11 @@ impl Island {
             i += 1;
         }
         self.ents.retain(|e| e.dying < 0.8);
+        self.eco_t -= dt;
+        if self.eco_t <= 0.0 {
+            self.eco_t = crate::ecology::TICK;
+            self.ecology(isl, viewed, rng, ev);
+        }
         self.move_animals(isl, dt, viewed, rng, ev);
         self.check_growth(isl, viewed, rng, ev);
         self.update_whale(isl, dt, rng, ev);
@@ -584,10 +675,24 @@ impl Island {
                 let (tile, x, y) = (s.tile, s.x, s.y);
                 let mut victims = vec![tile];
                 victims.extend(self.map.tiles[tile].n1.iter().copied());
-                for u in victims {
-                    if let Some((id, _)) = self.map.tiles[u].occ {
-                        if u == tile || rng.f() < 0.75 {
-                            self.kill(isl, id, Death::Zap, ev);
+                // a tree in the blast takes the bolt and shelters everything else
+                let rod = victims.iter().copied().find(|&u| matches!(self.map.tiles[u].occ, Some((_, Sp::Tree))));
+                if let Some(u) = rod {
+                    let (id, _) = self.map.tiles[u].occ.unwrap();
+                    let (tx, ty) = (self.map.tiles[u].x, self.map.tiles[u].y);
+                    ev.push(Ev::Link { isl, kind: Link::Rod, ax: x, ay: y - 90.0, bx: tx, by: ty, ok: true });
+                    let burnt = self.ents.iter().find(|e| e.id == id).map(|e| e.scorch > 0.0).unwrap_or(false);
+                    if burnt {
+                        self.kill(isl, id, Death::Zap, ev);
+                    } else if let Some(e) = self.ents.iter_mut().find(|e| e.id == id) {
+                        e.scorch = 18.0;
+                    }
+                } else {
+                    for u in victims {
+                        if let Some((id, _)) = self.map.tiles[u].occ {
+                            if u == tile || rng.f() < 0.75 {
+                                self.kill(isl, id, Death::Zap, ev);
+                            }
                         }
                     }
                 }
@@ -619,7 +724,7 @@ impl Island {
                 b.done = b.dead > 0.7;
                 continue;
             }
-            b.life -= dt;
+            b.life -= dt * if self.weather == Weather::Rain { 2.5 } else { 1.0 };
             if b.life <= 0.0 || b.leave {
                 b.leave = true;
                 b.lift = (b.lift - dt * 1.2).max(0.0);
@@ -947,6 +1052,9 @@ pub struct Game {
     pub rank: usize,
     rank_cd: f32,
     cer: u8,
+    pub weather: Weather,
+    pub weather_t: f32,
+    pub forecast: Weather,
 }
 
 impl Game {
@@ -987,6 +1095,9 @@ impl Game {
             rank: 0,
             rank_cd: 1.0,
             cer: 0,
+            weather: Weather::Clear,
+            weather_t: 30.0,
+            forecast: Weather::Rain,
         };
         for i in 0..PLAYERS {
             g.isl[i].whale_t = 25.0 + g.rng.f() * 25.0;
@@ -1268,6 +1379,28 @@ impl Game {
         true
     }
 
+    /// Clear skies alternate with rain, drought or wind.
+    fn update_weather(&mut self, dt: f32) {
+        self.weather_t -= dt;
+        if self.weather_t > 0.0 {
+            return;
+        }
+        self.weather = self.forecast;
+        self.weather_t = match self.weather {
+            Weather::Clear => 22.0 + self.rng.f() * 14.0,
+            Weather::Wind => 12.0 + self.rng.f() * 6.0,
+            _ => 16.0 + self.rng.f() * 8.0,
+        };
+        self.forecast = if self.weather == Weather::Clear { *self.rng.pick(&[Weather::Rain, Weather::Rain, Weather::Drought, Weather::Wind]) } else { Weather::Clear };
+        self.ev.push(Ev::Weather(self.weather));
+        self.sfx(match self.weather {
+            Weather::Clear => Sfx::ClearStart,
+            Weather::Rain => Sfx::RainStart,
+            Weather::Drought => Sfx::DroughtStart,
+            Weather::Wind => Sfx::WindStart,
+        });
+    }
+
     pub fn tap_whale(&mut self) -> bool {
         let Game { isl, rng, ev, .. } = self;
         if isl[0].catch_whale(0, rng, ev) {
@@ -1395,6 +1528,7 @@ impl Game {
             return;
         }
         self.t += dt;
+        self.update_weather(dt);
         self.fade = (self.fade - dt * 3.0).max(0.0);
         self.shake = (self.shake - dt).max(0.0);
         self.flash = (self.flash - dt).max(0.0);
@@ -1425,7 +1559,9 @@ impl Game {
                 self.bot_defend(p, dt);
             }
             let viewed = self.view == p;
+            let weather = self.weather;
             let Game { isl, rng, ev, .. } = self;
+            isl[p].weather = weather;
             isl[p].update(p, dt, viewed, rng, ev);
         }
         let mut arrived = vec![];

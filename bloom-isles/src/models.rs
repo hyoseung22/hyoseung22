@@ -564,6 +564,25 @@ pub fn terrain_col(t: Terr, lush: f32, shade_k: f32) -> u32 {
     crate::art::shade(base, 1.0 + (shade_k - 0.5) * 0.08)
 }
 
+/// Tint a tile top by its soil: wet is darker and richer, dry grass turns straw, fertile grass deepens.
+pub fn soil_col(t: &crate::island::Tile, base: u32) -> u32 {
+    if t.t == Terr::Pond {
+        return base;
+    }
+    let wet = ((t.moist - 0.55) / 0.45).clamp(0.0, 1.0);
+    let dry = ((0.32 - t.moist) / 0.32).clamp(0.0, 1.0);
+    let rich = ((t.fert - 0.55) / 0.45).clamp(0.0, 1.0);
+    let grassy = matches!(t.t, Terr::Grass | Terr::Mead | Terr::Rock);
+    let mut c = base;
+    if grassy {
+        c = lerp_col(c, 0xd6c27a, dry * 0.55);
+        c = lerp_col(c, 0x3c8a2a, rich * 0.4);
+    } else {
+        c = lerp_col(c, 0xf3dea8, dry * 0.3);
+    }
+    crate::art::shade(c, 1.0 - wet * 0.2)
+}
+
 /// A hexagonal board tile: top at `h`, sides down to -DEPTH with a darker lower band. Centre (x, z).
 pub fn hex_prism(x: f32, z: f32, h: f32, r: f32) -> Geo {
     let mut g = Geo::default();
@@ -608,7 +627,7 @@ fn fix_winding(g: &mut Geo, centre: Vec3) {
 pub fn island(map: &IslandMap, lush: f32) -> Model {
     let mut m = Model::default();
     for t in &map.tiles {
-        let top = terrain_col(t.t, lush, t.shade);
+        let top = soil_col(t, terrain_col(t.t, lush, t.shade));
         let side = if t.t == Terr::Pond { 0x2f7fa0 } else { 0x9a6843 };
         m.parts.push(Part { geo: hex_prism(t.x, t.y / SQ, terrain_h(t.t), HS * 0.985), paint: Paint::TopSide { top, side, strata: STRATA }, out: 1.5 });
     }

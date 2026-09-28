@@ -6,6 +6,7 @@
 mod art;
 mod audio;
 mod eco;
+mod ecology;
 mod export;
 mod hud;
 mod input;
@@ -297,6 +298,7 @@ fn play_sounds(
     mut music_t: Local<f32>,
     mut note: Local<usize>,
     mut drone_t: Local<i32>,
+    mut amb_t: Local<f32>,
     mut rng: Local<Option<Rng>>,
 ) {
     let rng = rng.get_or_insert_with(Rng::from_time);
@@ -315,6 +317,19 @@ fn play_sounds(
     let paused = session.game.as_ref().map(|g| g.paused).unwrap_or(false);
     if settings.muted || paused || session.scene == Scene::End {
         return;
+    }
+    // weather ambience
+    *amb_t -= time.delta_secs();
+    if *amb_t <= 0.0 {
+        *amb_t = 3.9;
+        let loop_sfx = match session.game.as_ref().filter(|_| session.scene == Scene::Play).map(|g| g.weather) {
+            Some(sim::Weather::Rain) => Some(Sfx::RainLoop),
+            Some(sim::Weather::Wind) => Some(Sfx::WindLoop),
+            _ => None,
+        };
+        if let Some(h) = loop_sfx.and_then(|s| sounds.sfx.get(&s)) {
+            commands.spawn((AudioPlayer::new(h.clone()), PlaybackSettings::DESPAWN));
+        }
     }
     // a wandering lute melody in D dorian over a slow drone
     *music_t -= time.delta_secs();

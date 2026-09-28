@@ -67,6 +67,23 @@ pub struct Tile {
     pub n2: Vec<usize>,
     /// Occupant: creature id and species.
     pub occ: Option<(u32, crate::eco::Sp)>,
+    /// Soil moisture 0..1 (ponds, shade and rain raise it; sun and drought lower it).
+    pub moist: f32,
+    /// Soil fertility 0..1 (animals and the dead enrich it; plants draw on it).
+    pub fert: f32,
+    /// Accumulator for slow terrain changes (meadow bloom, wetland, drying).
+    pub ctr: f32,
+}
+
+/// Resting moisture and fertility of a terrain.
+pub fn soil(t: Terr) -> (f32, f32) {
+    match t {
+        Terr::Sand => (0.2, 0.15),
+        Terr::Grass => (0.45, 0.45),
+        Terr::Mead => (0.55, 0.62),
+        Terr::Pond => (1.0, 0.5),
+        Terr::Rock => (0.35, 0.3),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,6 +169,17 @@ pub fn make_deco(t: Terr, rng: &mut Rng) -> Vec<Deco> {
 }
 
 impl IslandMap {
+    /// Change a tile's terrain and give it matching decoration and soil.
+    pub fn set_terrain(&mut self, i: usize, t: Terr, rng: &mut Rng) {
+        let (m, f) = soil(t);
+        let tile = &mut self.tiles[i];
+        tile.t = t;
+        tile.deco = make_deco(t, rng);
+        tile.moist = (tile.moist + m) / 2.0;
+        tile.fert = tile.fert.max(f * 0.8);
+        tile.ctr = 0.0;
+    }
+
     /// Recompute neighbour lists, the coastline and the bounds.
     pub fn link(&mut self) {
         let n = self.tiles.len();
@@ -202,7 +230,8 @@ impl IslandMap {
                 }
             }
             let Some(((q, r), _)) = best else { break };
-            let tile = Tile { q, r, x: hx(q, r), y: hy(r), t: Terr::Sand, shade: rng.f(), deco: make_deco(Terr::Sand, rng), n1: vec![], n2: vec![], occ: None };
+            let (m, f) = soil(Terr::Sand);
+            let tile = Tile { q, r, x: hx(q, r), y: hy(r), t: Terr::Sand, shade: rng.f(), deco: make_deco(Terr::Sand, rng), n1: vec![], n2: vec![], occ: None, moist: m, fert: f, ctr: 0.0 };
             self.index.insert((q, r), self.tiles.len());
             added.push(self.tiles.len());
             self.tiles.push(tile);
@@ -216,8 +245,7 @@ impl IslandMap {
             let beach_only = matches!(t.occ, Some((_, crate::eco::Sp::Palm | crate::eco::Sp::Crab)));
             if inland && !beach_only {
                 let nt = if rng.f() < 0.35 { Terr::Mead } else { Terr::Grass };
-                self.tiles[i].t = nt;
-                self.tiles[i].deco = make_deco(nt, rng);
+                self.set_terrain(i, nt, rng);
             }
         }
         self.link();
@@ -290,7 +318,7 @@ fn try_gen(seed: u32, force: bool) -> Option<IslandMap> {
 
     let mut tiles: Vec<Tile> = land
         .iter()
-        .map(|&(q, r)| Tile { q, r, x: hx(q, r), y: hy(r), t: Terr::Grass, shade: rng.f(), deco: vec![], n1: vec![], n2: vec![], occ: None })
+        .map(|&(q, r)| Tile { q, r, x: hx(q, r), y: hy(r), t: Terr::Grass, shade: rng.f(), deco: vec![], n1: vec![], n2: vec![], occ: None, moist: 0.0, fert: 0.0, ctr: 0.0 })
         .collect();
     let index: HashMap<(i32, i32), usize> = tiles.iter().enumerate().map(|(i, t)| ((t.q, t.r), i)).collect();
     let lookup = |q: i32, r: i32| index.get(&(q, r)).copied();
@@ -365,6 +393,9 @@ fn try_gen(seed: u32, force: bool) -> Option<IslandMap> {
 
     for t in &mut tiles {
         t.deco = make_deco(t.t, &mut rng);
+        let (m, f) = soil(t.t);
+        t.moist = m;
+        t.fert = f + (rng.f() - 0.5) * 0.1;
     }
     let mut m = IslandMap { seed, tiles, index, edge, b: Bounds { x0: 0.0, x1: 0.0, y0: 0.0, y1: 0.0 } };
     m.link();

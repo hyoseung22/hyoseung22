@@ -1,14 +1,14 @@
 //! Screen-space interface: layout, HUD, title, pause and end screens, tutorial hand.
 //! Drawn immediate-mode: every frame spawns short-lived sprites.
 
-use crate::art::{bc, bca, Art, Tex, TEAM};
+use crate::art::{bc, bca, pal, Art, Tex, TEAM};
 use crate::eco::{def, Sp};
 use crate::input::{BtnId, Pointer};
 use crate::island::{Terr, HS};
 use crate::rng::Rng;
-use crate::sim::{self, ease_back, ease_io, lerp, Card, Game, DUR, GOAL, REROLL_CD};
+use crate::sim::{self, ease_back, ease_io, lerp, Card, Ev, Game, Sfx, DUR, REROLL_CD};
 use crate::world::MainView;
-use crate::{Ephemeral, Fonts, Scene, Session, Settings, LAYER_HUD};
+use crate::{Ephemeral, Fonts, Pending, Scene, Session, Settings, LAYER_HUD};
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, SpriteImageMode, TextureSlicer};
@@ -152,28 +152,40 @@ pub fn update_layout(window: Single<&Window, With<PrimaryWindow>>, session: Res<
     l.pause_resume = Btn { x: w / 2.0, y: h / 2.0, r: 46.0 };
     l.pause_home = Btn { x: w / 2.0 - 100.0, y: h / 2.0, r: 28.0 };
 
-    // end screen panels, indexed by player
+    // end screen: a podium. 2nd | 1st | 3rd, and 4th off to the side.
     l.end_panels = vec![None; 4];
     if let (Scene::End, Some(g)) = (session.scene, session.game.as_ref()) {
-        let gap = 22.0;
-        let pw = if port { ((w - 60.0) / 2.0).clamp(110.0, 210.0) } else { (w * 0.18).clamp(130.0, 240.0).min((w - 60.0 - gap * 3.0) / 4.0) };
+        let gap = 24.0;
+        let pw = if port { ((w - 60.0) / 2.0).clamp(110.0, 210.0) } else { (w * 0.17).clamp(120.0, 230.0).min((w - 80.0 - gap * 3.0) / 4.4) };
         let ph = pw * 0.72;
         for (rank, &p) in g.ranks.iter().enumerate() {
+            let big = if rank == 0 { 1.2 } else { 1.0 };
+            let (bw, bh) = (pw * big, ph * big);
             let (sx, sy) = if port {
-                let x0 = w / 2.0 - pw - gap / 2.0;
-                (x0 + (rank % 2) as f32 * (pw + gap), h * 0.2 + (rank / 2) as f32 * (ph + 100.0) + (rank % 2) as f32 * 18.0)
+                match rank {
+                    0 => (w / 2.0 - bw / 2.0, h * 0.14),
+                    1 => (w / 2.0 - pw - gap / 2.0, h * 0.14 + ph * 1.2 + 90.0),
+                    2 => (w / 2.0 + gap / 2.0, h * 0.14 + ph * 1.2 + 110.0),
+                    _ => (w / 2.0 - pw / 2.0, h * 0.14 + ph * 2.2 + 200.0),
+                }
             } else {
-                let x0 = w / 2.0 - (pw * 4.0 + gap * 3.0) / 2.0;
-                (x0 + rank as f32 * (pw + gap), h * 0.28 + rank as f32 * 20.0)
+                let total = pw * 4.2 + gap * 3.0;
+                let x0 = w / 2.0 - total / 2.0;
+                match rank {
+                    0 => (x0 + pw + gap, h * 0.2),
+                    1 => (x0, h * 0.27),
+                    2 => (x0 + pw * 2.2 + gap * 2.0, h * 0.3),
+                    _ => (x0 + pw * 3.2 + gap * 3.0, h * 0.34),
+                }
             };
-            let d = ((g.end_t - 0.3 - rank as f32 * 0.25) / 0.5).clamp(0.0, 1.0);
+            let d = ((g.end_t - sim::REVEAL_AT[rank]) / 0.45).clamp(0.0, 1.0);
             if d > 0.0 {
-                l.end_panels[p] = Some(R::new(sx, sy + (1.0 - ease_back(d)) * 60.0, pw, ph));
+                l.end_panels[p] = Some(R::new(sx, sy + (1.0 - ease_back(d)) * 80.0, bw, bh));
             }
         }
-        let by = h - 70.0;
-        l.end_again = Btn { x: w / 2.0 + 40.0, y: by, r: 36.0 };
-        l.end_home = Btn { x: w / 2.0 - 50.0, y: by, r: 26.0 };
+        let by = h - 60.0;
+        l.end_again = Btn { x: w / 2.0 + 44.0, y: by, r: 34.0 };
+        l.end_home = Btn { x: w / 2.0 - 44.0, y: by, r: 26.0 };
     }
 }
 
@@ -185,6 +197,7 @@ pub struct Pen<'a, 'w, 's> {
     pub h: f32,
     pub z: f32,
     pub layer: usize,
+    pub font: Handle<Font>,
 }
 
 impl Pen<'_, '_, '_> {
@@ -210,6 +223,7 @@ impl Pen<'_, '_, '_> {
         let spr = Sprite { image: art.pixel.h.clone(), custom_size: Some(Vec2::new(w, h)), anchor: Anchor::TopLeft, color, ..default() };
         self.spawn(spr, x, y, 0.0, Vec2::ONE);
     }
+    #[allow(clippy::too_many_arguments)]
     fn sliced(&mut self, tex: &Tex, x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) {
         let k = 14.0 / radius.max(1.0);
         let spr = Sprite {
@@ -242,11 +256,26 @@ impl Pen<'_, '_, '_> {
     pub fn ring(&mut self, art: &Art, x: f32, y: f32, r: f32, color: Color) {
         self.tex(&art.ring, x, y, r / 30.0, color);
     }
+    /// Round button: soft shadow, fill, faint rim.
     pub fn button(&mut self, art: &Art, b: Btn, fill: Color, hot: bool) {
-        let r = b.r * if hot { 1.06 } else { 1.0 };
-        self.circle(art, b.x, b.y + 3.0, b.r, Color::srgba(0.16, 0.12, 0.12, 0.18));
+        let r = b.r * if hot { 1.07 } else { 1.0 };
+        self.circle(art, b.x, b.y + 3.0, b.r, Color::srgba(0.02, 0.06, 0.08, 0.35));
         self.circle(art, b.x, b.y, r, fill);
-        self.ring(art, b.x, b.y, r, bc(crate::art::INK));
+        self.ring(art, b.x, b.y, r - 1.0, bca(pal::CREAM, if hot { 0.5 } else { 0.18 }));
+    }
+    /// Centred text with a dark drop shadow.
+    pub fn text(&mut self, x: f32, y: f32, size: f32, color: Color, s: &str) {
+        for (dx, dy, c) in [(0.0, size * 0.08, bca(pal::SLATE, 0.8 * color.alpha())), (0.0, 0.0, color)] {
+            self.z += 0.01;
+            self.cmd.spawn((
+                Text2d::new(s),
+                TextFont { font: self.font.clone(), font_size: 64.0, ..default() },
+                TextColor(c),
+                Transform::from_xyz(x + dx - self.w / 2.0, self.h / 2.0 - y - dy, self.z).with_scale(Vec3::splat(size / 64.0)),
+                RenderLayers::layer(self.layer),
+                Ephemeral,
+            ));
+        }
     }
 }
 
@@ -254,6 +283,7 @@ fn to_screen(w: f32, h: f32, p: Vec2) -> Vec2 {
     Vec2::new(p.x - w / 2.0, h / 2.0 - p.y)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn arc(g: &mut Gizmos<HudGizmos>, w: f32, h: f32, c: Vec2, r: f32, a0: f32, frac: f32, color: Color) {
     if frac <= 0.001 {
         return;
@@ -268,7 +298,7 @@ fn arc(g: &mut Gizmos<HudGizmos>, w: f32, h: f32, c: Vec2, r: f32, a0: f32, frac
     g.linestrip_2d(pts, color);
 }
 
-/* ---------------- state for confetti and the logo ---------------- */
+/* ---------------- screen-space effects ---------------- */
 
 pub struct Confetto {
     x: f32,
@@ -280,15 +310,42 @@ pub struct Confetto {
     c: u32,
 }
 
+struct Spark {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+    max: f32,
+    c: u32,
+}
+
+struct Rocket {
+    x: f32,
+    y: f32,
+    ty: f32,
+    vy: f32,
+    c: u32,
+}
+
 #[derive(Resource, Default)]
 pub struct HudState {
     confetti: Vec<Confetto>,
     pending_win: Option<bool>,
+    sparks: Vec<Spark>,
+    rockets: Vec<Rocket>,
+    next_rocket: f32,
+    /// (moved up?, seconds left)
+    rank_flash: Option<(bool, f32)>,
+    crowd_seed: u32,
 }
 
 impl HudState {
     pub fn start_confetti(&mut self, win: bool) {
         self.pending_win = Some(win);
+        self.next_rocket = 0.0;
+        self.rockets.clear();
+        self.sparks.clear();
     }
 }
 
@@ -300,15 +357,16 @@ pub struct Logo {
 
 pub fn setup_title_text(mut commands: Commands, fonts: Res<Fonts>) {
     let size = 80.0;
-    let colors = [0xff9fb8, 0xffd35c, 0x9fd86b, 0x72a9f5, 0xb893ea, 0xfff6e4, 0xfff6e4, 0xfff6e4, 0xfff6e4, 0xfff6e4, 0xfff6e4];
     let word = "Bloom Isles";
-    let mut offsets: Vec<(f32, f32, bool)> = (0..12).map(|i| {
-        let a = i as f32 / 12.0 * TAU;
-        (a.cos() * 6.0, a.sin() * 6.0 + 5.0, false)
-    }).collect();
-    offsets.extend((0..12).map(|i| {
-        let a = i as f32 / 12.0 * TAU;
-        (a.cos() * 6.0, a.sin() * 6.0, false)
+    let mut offsets: Vec<(f32, f32, bool)> = (0..16)
+        .map(|i| {
+            let a = i as f32 / 16.0 * TAU;
+            (a.cos() * 5.0, a.sin() * 5.0 + 7.0, false)
+        })
+        .collect();
+    offsets.extend((0..16).map(|i| {
+        let a = i as f32 / 16.0 * TAU;
+        (a.cos() * 5.0, a.sin() * 5.0, false)
     }));
     offsets.push((0.0, 0.0, true));
     for (k, (dx, dy, main)) in offsets.into_iter().enumerate() {
@@ -325,7 +383,7 @@ pub fn setup_title_text(mut commands: Commands, fonts: Res<Fonts>) {
             ))
             .with_children(|p| {
                 for (i, ch) in word.chars().enumerate() {
-                    let c = if main { bc(colors[i]) } else { bc(crate::art::INK) };
+                    let c = if !main { bc(pal::SLATE) } else if i < 5 { bc(pal::GOLD) } else { bc(pal::CREAM) };
                     p.spawn((TextSpan::new(ch.to_string()), font.clone(), TextColor(c)));
                 }
             });
@@ -340,42 +398,59 @@ pub fn draw_hud(
     session: Res<Session>,
     settings: Res<Settings>,
     art: Res<Art>,
+    fonts: Res<Fonts>,
     layout: Res<Layout>,
     view: Res<MainView>,
     pointer: Res<Pointer>,
     time: Res<Time>,
+    mut pending: ResMut<Pending>,
     mut state: ResMut<HudState>,
     mut g: Gizmos<HudGizmos>,
     mut logo: Query<(&Logo, &mut Transform, &mut Visibility)>,
     mut rng: Local<Option<Rng>>,
 ) {
     let rng = rng.get_or_insert_with(Rng::from_time);
+    let dt = time.delta_secs().min(0.05);
     let l = &*layout;
-    let mut pen = Pen { cmd: &mut commands, w: l.w, h: l.h, z: 10.0, layer: LAYER_HUD };
+    let mut pen = Pen { cmd: &mut commands, w: l.w, h: l.h, z: 10.0, layer: LAYER_HUD, font: fonts.title.clone() };
     let t = session.t;
     let title = session.scene == Scene::Title;
     for (lg, mut tf, mut vis) in &mut logo {
         *vis = if title { Visibility::Visible } else { Visibility::Hidden };
         if title {
             let s = l.logo_size / 80.0;
-            let p = to_screen(l.w, l.h, Vec2::new(l.w / 2.0 + lg.dx * s, l.logo_y + lg.dy * s + (t * 2.0).sin() * 3.0));
+            let p = to_screen(l.w, l.h, Vec2::new(l.w / 2.0 + lg.dx * s, l.logo_y + lg.dy * s + (t * 1.6).sin() * 2.0));
             tf.translation.x = p.x;
             tf.translation.y = p.y;
             tf.scale = Vec3::splat(s);
         }
     }
+    // rank changes flash the player's marker
+    for e in pending.ev.iter() {
+        if let Ev::Rank { up } = e {
+            state.rank_flash = Some((*up, 1.2));
+        }
+    }
+    pending.ev.retain(|e| !matches!(e, Ev::Rank { .. }));
+    if let Some((_, left)) = state.rank_flash.as_mut() {
+        *left -= dt;
+    }
+    if state.rank_flash.map(|f| f.1 <= 0.0).unwrap_or(false) {
+        state.rank_flash = None;
+    }
     if let Some(win) = state.pending_win.take() {
         state.confetti.clear();
+        state.crowd_seed = rng.next_u32();
         if win {
-            for _ in 0..140 {
+            for _ in 0..160 {
                 state.confetti.push(Confetto {
                     x: rng.f() * l.w,
-                    y: -rng.f() * l.h * 0.6,
+                    y: -rng.f() * l.h * 0.8,
                     vx: (rng.f() - 0.5) * 60.0,
-                    vy: 60.0 + rng.f() * 120.0,
+                    vy: 70.0 + rng.f() * 120.0,
                     r: rng.f() * TAU,
                     vr: (rng.f() - 0.5) * 8.0,
-                    c: *rng.pick(&[0xff8f7d, 0xffc94f, 0x8fd070, 0x72a9f5, 0xb893ea, 0xffffff]),
+                    c: *rng.pick(&[TEAM[0].0, pal::GOLD, 0x5fb04a, TEAM[1].0, TEAM[3].0, pal::CREAM]),
                 });
             }
         }
@@ -385,77 +460,51 @@ pub fn draw_hud(
         Scene::Play | Scene::End => {
             let Some(gm) = session.game.as_ref() else { return };
             if session.scene == Scene::Play {
-                draw_play(&mut pen, &mut g, &art, l, gm, &view, &pointer, &settings, t);
-            }
-            if session.scene == Scene::End {
-                let dt = time.delta_secs().min(0.05);
-                for c in &mut state.confetti {
-                    c.x += c.vx * dt;
-                    c.y += c.vy * dt;
-                    c.r += c.vr * dt;
-                    if c.y > l.h + 20.0 {
-                        c.y = -10.0;
-                        c.x = rng.f() * l.w;
-                    }
+                draw_play(&mut pen, &mut g, &art, l, gm, &view, &pointer, &settings, &state, t);
+                if gm.paused {
+                    pen.layer = LAYER_TOP;
+                    pen.rect(0.0, 0.0, l.w, l.h, &art, bca(pal::SLATE, 0.62));
+                    pen.button(&art, l.pause_resume, bc(TEAM[0].0), pointer.hover == Some(BtnId::Resume));
+                    pen.tex(&art.icon_play, l.pause_resume.x + 3.0, l.pause_resume.y, 2.2, Color::WHITE);
+                    pen.button(&art, l.pause_home, bc(pal::SLATE2), pointer.hover == Some(BtnId::PauseHome));
+                    pen.tex(&art.icon_home, l.pause_home.x, l.pause_home.y, 1.6, Color::WHITE);
                 }
+            } else {
+                update_show(&mut state, gm, l, rng, dt, &mut pending);
                 draw_end(&mut pen, &art, l, gm, &pointer, &state, t);
-            } else if gm.paused {
-                pen.layer = LAYER_TOP;
-                pen.rect(0.0, 0.0, l.w, l.h, &art, Color::srgba(0.24, 0.27, 0.31, 0.45));
-                pen.button(&art, l.pause_resume, bc(TEAM[0].0), pointer.hover == Some(BtnId::Resume));
-                pen.tex(&art.icon_play, l.pause_resume.x + 3.0, l.pause_resume.y, 2.2, Color::WHITE);
-                pen.button(&art, l.pause_home, bc(0xfff6e4), pointer.hover == Some(BtnId::PauseHome));
-                pen.tex(&art.icon_home, l.pause_home.x, l.pause_home.y, 1.7, Color::WHITE);
             }
         }
     }
-    // paper grain over everything
     pen.layer = LAYER_TOP;
     pen.z = 90.0;
-    let grain = Sprite {
-        image: art.grain.h.clone(),
-        custom_size: Some(Vec2::new(l.w, l.h)),
-        image_mode: SpriteImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 },
-        ..default()
-    };
-    pen.spawn(grain, l.w / 2.0, l.h / 2.0, 0.0, Vec2::ONE);
-    // mute button lives on every screen
-    pen.button(&art, l.mute, bc(0xfff6e4), pointer.hover == Some(BtnId::Mute));
-    pen.tex(if settings.muted { &art.icon_sound_off } else { &art.icon_sound_on }, l.mute.x, l.mute.y, 1.3, Color::WHITE);
+    pen.button(&art, l.mute, bc(pal::SLATE), pointer.hover == Some(BtnId::Mute));
+    pen.tex(if settings.muted { &art.icon_sound_off } else { &art.icon_sound_on }, l.mute.x, l.mute.y, 1.25, Color::WHITE);
 }
 
 fn draw_title(pen: &mut Pen, art: &Art, l: &Layout, settings: &Settings, pointer: &Pointer, t: f32, dice_t: f32) {
-    let ay = l.logo_y + l.logo_size * 0.66;
+    let ay = l.logo_y + l.logo_size * 0.72;
     for i in 0..4 {
-        let s = if i == 0 { 16.0 } else { 13.0 } / 20.0;
-        pen.tex(&art.avatars[i][2], l.w / 2.0 + (i as f32 - 1.5) * 44.0, ay + (t * 3.0 + i as f32).sin() * 2.0, s, Color::WHITE);
+        let hop = ((t * 2.2 + i as f32 * 0.7).sin()).max(0.0) * 6.0;
+        pen.tex(&art.avatars[i][1], l.w / 2.0 + (i as f32 - 1.5) * 42.0, ay - hop, if i == 0 { 0.8 } else { 0.66 }, Color::WHITE);
     }
     let p = l.title_play;
-    let pulse = Btn { r: p.r * (1.0 + (t * 3.0).sin() * 0.03), ..p };
+    let pulse = Btn { r: p.r * (1.0 + (t * 3.0).sin() * 0.025), ..p };
     pen.button(art, pulse, bc(TEAM[0].0), pointer.hover == Some(BtnId::Play));
     pen.tex(&art.icon_play, p.x + 4.0, p.y, p.r / 16.0, Color::WHITE);
     let d = l.title_dice;
-    pen.button(art, d, bc(0xfff6e4), pointer.hover == Some(BtnId::Dice));
+    pen.button(art, d, bc(pal::SLATE), pointer.hover == Some(BtnId::Dice));
     pen.tex_full(&art.dice, d.x, d.y, Vec2::ONE, ((dice_t * 8.0).min(TAU)).sin() * 0.3, false, Color::WHITE);
     for (i, r) in l.title_diff.iter().enumerate() {
         let on = settings.diff == i;
-        let fill = if on { bc(0xfff3c7) } else { bca(0xfff6e4, 0.6) };
-        let line = if on { bc(crate::art::INK) } else { bca(crate::art::INK, 0.4) };
-        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, Some(fill), Some(line));
+        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, Some(if on { bc(pal::SLATE) } else { bca(pal::SLATE, 0.55) }), Some(if on { bc(pal::GOLD) } else { bca(pal::CREAM, 0.15) }));
         for k in 0..=i {
             let x = r.x + r.w / 2.0 + (k as f32 - i as f32 / 2.0) * 12.0;
             pen.tex(if on { &art.sprout_on } else { &art.sprout_off }, x, r.y + r.h / 2.0, 0.9, Color::WHITE);
         }
     }
-    // quit
     let q = l.title_quit;
-    pen.button(art, q, bc(0xfff6e4), pointer.hover == Some(BtnId::Quit));
-    let s = q.r * 0.55;
-    pen.rect(q.x - 1.2, q.y - s, 2.4, s * 0.9, art, bc(crate::art::INK));
-    for i in 0..14 {
-        let a = -PI / 2.0 + 0.55 + i as f32 / 13.0 * (TAU - 1.1);
-        pen.circle(art, q.x + a.cos() * s * 0.8, q.y + a.sin() * s * 0.8, 1.3, bc(crate::art::INK));
-    }
+    pen.button(art, q, bc(pal::SLATE), pointer.hover == Some(BtnId::Quit));
+    pen.tex(&art.icon_quit, q.x, q.y, 1.0, Color::WHITE);
 }
 
 fn card_icon(pen: &mut Pen, art: &Art, card: Card, x: f32, y: f32, s: f32, alpha: f32) {
@@ -465,17 +514,10 @@ fn card_icon(pen: &mut Pen, art: &Art, card: Card, x: f32, y: f32, s: f32, alpha
             let k = s * icon_k(sp);
             let head = def(sp).head;
             let gy = y + head * k * 0.42;
-            let ground = match def(sp).terr[0] {
-                Terr::Pond => 0x86cde6,
-                Terr::Sand => 0xf5e0a6,
-                _ => 0xa8d77a,
-            };
-            pen.tex(&art.shadow, x, gy, k, bca(ground, alpha));
-            let by = if sp == Sp::Bee { gy - 24.0 * k } else { gy };
-            pen.tex(art.sp(sp, 1), x, by, k, wc);
+            pen.tex(art.sp(sp, 1), x, gy, k, wc);
         }
         Card::Storm => {
-            pen.tex(&art.cloud, x, y - 4.0 * s, s * 0.9, wc);
+            pen.tex(&art.cloud, x, y - 4.0 * s, s * 0.85, wc);
             pen.tex(&art.bolt, x + 2.0 * s, y + 14.0 * s, s * 0.8, wc);
         }
         Card::Beetle => {
@@ -489,17 +531,17 @@ fn card_icon(pen: &mut Pen, art: &Art, card: Card, x: f32, y: f32, s: f32, alpha
 
 fn icon_k(sp: Sp) -> f32 {
     match sp {
-        Sp::Bee => 1.75,
-        Sp::Bird => 1.65,
-        Sp::Crab => 1.7,
-        Sp::Frog => 1.6,
+        Sp::Bee => 1.05,
+        Sp::Bird => 1.35,
+        Sp::Crab => 1.35,
+        Sp::Frog => 1.4,
         Sp::Lily => 1.6,
-        Sp::Mushroom => 1.5,
-        Sp::Flower => 1.4,
-        Sp::Rabbit | Sp::Fox => 1.3,
-        Sp::Bush => 1.35,
-        Sp::Tree => 0.95,
-        Sp::Palm => 1.05,
+        Sp::Mushroom => 1.45,
+        Sp::Flower => 1.35,
+        Sp::Rabbit | Sp::Fox => 1.15,
+        Sp::Bush => 1.3,
+        Sp::Tree => 0.9,
+        Sp::Palm => 1.0,
     }
 }
 
@@ -508,28 +550,26 @@ fn portrait_center(l: &Layout, i: usize) -> Vec2 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, t: f32) {
+fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, view: &MainView, pointer: &Pointer, settings: &Settings, state: &HudState, t: f32) {
     let (w, h) = (l.w, l.h);
-    let ink = bc(crate::art::INK);
-    let paper = bc(0xfff6e4);
+    let slate = bc(pal::SLATE);
     let me = &gm.players[0];
 
     if gm.view != 0 {
         let a = l.isle;
-        pen.rrect(art, a.x + 4.0, a.y + 4.0, a.w - 8.0, a.h - 8.0, 22.0, None, Some(bca(TEAM[gm.view].0, 0.6)));
-        pen.rrect(art, a.x + 6.0, a.y + 6.0, a.w - 12.0, a.h - 12.0, 20.0, None, Some(bca(TEAM[gm.view].0, 0.6)));
-        pen.tex(&art.avatars[gm.view][1], a.x + 34.0, a.y + 34.0, 0.9, Color::WHITE);
+        pen.rrect(art, a.x + 4.0, a.y + 4.0, a.w - 8.0, a.h - 8.0, 22.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
+        pen.rrect(art, a.x + 6.0, a.y + 6.0, a.w - 12.0, a.h - 12.0, 20.0, None, Some(bca(TEAM[gm.view].0, 0.8)));
+        pen.tex(&art.avatars[gm.view][1], a.x + 34.0, a.y + 38.0, 0.9, Color::WHITE);
     }
     if gm.fade > 0.0 {
         let a = l.isle;
-        pen.rect(a.x, a.y, a.w, a.h, art, bca(0x8ed5d2, gm.fade));
+        pen.rect(a.x, a.y, a.w, a.h, art, bca(pal::SEA, gm.fade));
     }
     if gm.flash > 0.0 {
-        pen.rect(0.0, 0.0, w, h, art, Color::srgba(1.0, 1.0, 0.9, (gm.flash * 1.6).min(1.0)));
+        pen.rect(0.0, 0.0, w, h, art, Color::srgba(1.0, 1.0, 0.92, (gm.flash * 1.6).min(1.0)));
     }
     if gm.alert > 0.0 {
-        let a = gm.alert * if gm.view != 0 { 0.35 } else { 0.22 };
-        let c = bca(0xe96b5f, a);
+        let c = bca(pal::RED, gm.alert * if gm.view != 0 { 0.4 } else { 0.28 });
         let b = 14.0;
         pen.rect(0.0, 0.0, w, b, art, c);
         pen.rect(0.0, h - b, w, b, art, c);
@@ -537,75 +577,76 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
         pen.rect(w - b, b, b, h - 2.0 * b, art, c);
     }
 
-    // timer
+    // sun timer
     let tm = l.timer;
     let left = (1.0 - gm.t / DUR).clamp(0.0, 1.0);
-    pen.button(art, tm, paper, false);
-    let warm = if left < 0.12 && (t * 8.0).sin() > 0.0 { bc(0xffb070) } else { bc(0xffd36b) };
+    pen.button(art, tm, slate, false);
+    let warm = if left < 0.12 && (t * 8.0).sin() > 0.0 { bc(pal::RED) } else { bc(pal::GOLD) };
     arc(g, w, h, tm.c(), tm.r - 7.0, PI / 2.0, left, warm);
-    arc(g, w, h, tm.c(), tm.r - 11.0, PI / 2.0, left, warm);
+    arc(g, w, h, tm.c(), tm.r - 10.0, PI / 2.0, left, warm);
     let sa = -PI / 2.0 - left * TAU;
     let sun = tm.c() + Vec2::new(sa.cos(), -sa.sin()) * (tm.r - 5.0);
-    pen.circle(art, sun.x, sun.y, 5.5, ink);
-    pen.circle(art, sun.x, sun.y, 4.3, bc(0xffb347));
+    pen.circle(art, sun.x, sun.y, 4.5, bc(0xffe08a));
 
-    // race track
+    // race to the flag
     let rc = l.race;
-    pen.rrect(art, rc.x, rc.y - 5.0, rc.w, 14.0, 7.0, Some(Color::srgba(0.16, 0.12, 0.12, 0.15)), None);
-    pen.rrect(art, rc.x, rc.y - 7.0, rc.w, 14.0, 7.0, Some(paper), Some(ink));
+    pen.rrect(art, rc.x, rc.y - 4.0, rc.w, 14.0, 7.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.3)), None);
+    pen.rrect(art, rc.x, rc.y - 7.0, rc.w, 14.0, 7.0, Some(slate), Some(bca(pal::CREAM, 0.15)));
     for i in 1..4 {
-        pen.circle(art, rc.x + rc.w * i as f32 / 4.0, rc.y, 2.0, bca(crate::art::INK, 0.2));
+        pen.circle(art, rc.x + rc.w * i as f32 / 4.0, rc.y, 2.0, bca(pal::CREAM, 0.25));
     }
-    pen.tex_full(&art.trophy, rc.x + rc.w + 14.0, rc.y, Vec2::ONE, (t * 1.5).sin() * 0.08, false, Color::WHITE);
+    let kme = (gm.isl[0].ds / sim::GOAL).clamp(0.0, 1.0);
+    pen.rrect(art, rc.x + 3.0, rc.y - 3.0, ((rc.w - 6.0) * kme).max(8.0), 6.0, 3.0, Some(bca(TEAM[0].0, 0.7)), None);
+    pen.tex(&art.trophy, rc.x + rc.w + 12.0, rc.y + 4.0, 1.0, Color::WHITE);
     for i in [1usize, 2, 3, 0] {
-        let k = (gm.isl[i].ds / GOAL).clamp(0.0, 1.0);
+        let k = (gm.isl[i].ds / sim::GOAL).clamp(0.0, 1.0);
         let x = rc.x + 8.0 + (rc.w - 16.0) * k;
-        let y = rc.y + if i == 0 { 0.0 } else { (i as f32 - 2.0) * 5.0 };
+        let y = rc.y + if i == 0 { -2.0 } else { (i as f32 - 2.0) * 4.0 - 2.0 };
         if i == 0 {
-            pen.circle(art, x, y, 17.0 + (t * 3.0).sin() * 1.5, Color::WHITE.with_alpha(0.5));
+            if let Some((up, left)) = state.rank_flash {
+                let k = 1.0 - left / 1.2;
+                pen.ring(art, x, y, 12.0 + k * 26.0, bca(if up { pal::GREEN } else { pal::RED }, 1.0 - k));
+                pen.ring(art, x, y, 10.0 + k * 16.0, bca(if up { pal::GREEN } else { pal::RED }, 1.0 - k));
+            }
+            pen.circle(art, x, y, 15.0 + (t * 3.0).sin(), bca(pal::GOLD, 0.35));
         }
-        pen.tex(&art.avatars[i][1], x, y, if i == 0 { 13.0 } else { 10.5 } / 20.0, Color::WHITE);
+        pen.tex(&art.avatars[i][1], x, y, if i == 0 { 0.52 } else { 0.42 }, Color::WHITE);
     }
-    // pause
-    pen.button(art, l.pause, paper, pointer.hover == Some(BtnId::Pause));
-    pen.tex(&art.icon_pause, l.pause.x, l.pause.y, 1.3, Color::WHITE);
+    pen.button(art, l.pause, slate, pointer.hover == Some(BtnId::Pause));
+    pen.tex(&art.icon_pause, l.pause.x, l.pause.y, 1.2, Color::WHITE);
 
-    // portraits: the islands themselves come from live cameras; decorate on the top layer
-    let sel = gm.selected();
-    let aiming = sel.map(|c| c.is_attack()).unwrap_or(false);
+    // portraits: live cameras show the islands; decorate them on the top layer
+    let aiming = gm.selected().map(|c| c.is_attack()).unwrap_or(false);
     let old = pen.layer;
     pen.layer = LAYER_TOP;
     for i in 0..4 {
         let r = l.p[i];
         let viewing = gm.view == i;
         let hot = aiming && i != 0;
-        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, None, None);
-        pen.sliced(&art.rrect_mask, r.x, r.y, r.w, r.h, 14.0, bc(0x8ed5d2));
+        pen.sliced(&art.rrect_mask, r.x, r.y, r.w, r.h, 12.0, bc(pal::SEA));
         if hot {
-            pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, Some(bca(0xe96b5f, 0.12 + (t * 6.0).sin() * 0.08)), None);
+            pen.rrect(art, r.x, r.y, r.w, r.h, 12.0, Some(bca(pal::RED, 0.14 + (t * 6.0).sin() * 0.08)), None);
         }
-        let k = (gm.isl[i].ds / GOAL).clamp(0.0, 1.0);
-        pen.rect(r.x + 6.0, r.y + r.h - 9.0, r.w - 12.0, 5.0, art, Color::WHITE.with_alpha(0.75));
-        pen.rect(r.x + 6.0, r.y + r.h - 9.0, (r.w - 12.0) * k, 5.0, art, bc(TEAM[i].0));
+        let k = (gm.isl[i].ds / sim::GOAL).clamp(0.0, 1.0);
+        pen.rect(r.x + 8.0, r.y + r.h - 10.0, r.w - 16.0, 5.0, art, bca(pal::SLATE, 0.7));
+        pen.rect(r.x + 8.0, r.y + r.h - 10.0, (r.w - 16.0) * k, 5.0, art, bc(TEAM[i].0));
         let threatened = gm.isl[i].threatened();
-        let edge = if threatened && (t * 10.0).sin() > 0.0 { bc(0xe96b5f) } else if viewing { bc(TEAM[i].1) } else { ink };
-        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, None, Some(edge));
-        if viewing || threatened {
-            pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 12.5, None, Some(edge));
-        }
-        let ar = (r.h * 0.2).clamp(9.0, 16.0);
+        let edge = if threatened && (t * 10.0).sin() > 0.0 { bc(pal::RED) } else if viewing { bc(pal::GOLD) } else { slate };
+        pen.rrect(art, r.x, r.y, r.w, r.h, 12.0, None, Some(edge));
+        pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 10.5, None, Some(edge));
         let mood = if gm.isl[i].hit_t > 0.0 { 0 } else { 1 };
-        pen.tex(&art.avatars[i][mood], r.x + ar + 5.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
+        let ar = (r.h * 0.22).clamp(10.0, 18.0);
+        pen.tex(&art.avatars[i][mood], r.x + ar + 4.0, r.y + ar + 8.0, ar / 24.0, Color::WHITE);
         if gm.isl[i].shield > 0.0 {
             pen.tex(&art.shield, r.x + r.w - ar - 4.0, r.y + ar + 6.0, ar / 20.0, Color::WHITE);
+        }
+        if gm.isl[i].whale.as_ref().map(|w| w.active()).unwrap_or(false) {
+            pen.tex(&art.whale, r.x + r.w - 26.0, r.y + r.h - 18.0, 0.32, Color::WHITE);
         }
         if hot {
             let c = r.center();
             let lift = if pointer.hover_portrait == Some(i) { 1.15 } else { 1.0 };
             pen.tex(&art.crosshair, c.x, c.y, r.h * 0.4 / 32.0 * (1.0 + (t * 6.0).sin() * 0.08) * lift, Color::WHITE);
-        }
-        if i == 0 {
-            pen.tex(&art.heart, r.x + r.w - 14.0, r.y + r.h - 20.0, 1.0, Color::WHITE);
         }
     }
     // attacks in flight
@@ -624,17 +665,13 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
             portrait_center(l, f.to)
         };
         let path = |kk: f32| Vec2::new(lerp(a.x, b.x, kk), lerp(a.y, b.y, kk) - (kk * PI).sin() * 90.0);
-        for j in 0..12 {
-            if j % 2 == 1 {
-                continue;
-            }
+        for j in (0..12).step_by(2) {
             let (k0, k1) = (k * j as f32 / 12.0, k * (j as f32 + 1.0) / 12.0);
-            g.line_2d(to_screen(w, h, path(k0)), to_screen(w, h, path(k1)), Color::WHITE.with_alpha(0.6));
+            g.line_2d(to_screen(w, h, path(k0)), to_screen(w, h, path(k1)), bca(pal::CREAM, 0.6));
         }
         let p = path(k);
         card_icon(pen, art, f.card, p.x, p.y, 0.9, 1.0);
-        pen.circle(art, p.x - 16.0, p.y - 16.0, 6.0, ink);
-        pen.circle(art, p.x - 16.0, p.y - 16.0, 4.8, bc(TEAM[f.from].0));
+        pen.tex(&art.avatars[f.from][1], p.x - 18.0, p.y - 14.0, 0.4, Color::WHITE);
     }
     pen.layer = old;
 
@@ -642,23 +679,32 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
     for i in 0..4 {
         draw_card(pen, g, art, l, gm, pointer, i);
     }
+    // combo meter
+    if gm.combo >= 2 && gm.t - gm.last_place < 6.0 {
+        let c = l.cards[3];
+        let (x, y) = (c.x + c.w + 12.0, c.y - 22.0);
+        let pul = 1.0 + (t * 10.0).sin() * 0.06;
+        let col = [pal::CREAM, pal::GOLD, 0xff9a3c, 0xff5a5a, 0xe86bff][((gm.combo as usize).saturating_sub(2)).min(4)];
+        pen.circle(art, x, y, 20.0 * pul, bca(pal::SLATE, 0.9));
+        arc(g, w, h, Vec2::new(x, y), 18.0, -PI / 2.0, 1.0 - (gm.t - gm.last_place) / 6.0, bc(col));
+        pen.text(x, y + 1.0, 18.0 * pul, bc(col), &format!("x{}", gm.combo));
+    }
     let rb = l.reroll;
-    pen.button(art, rb, paper, pointer.hover == Some(BtnId::Reroll));
-    pen.tex(&art.icon_reroll, rb.x, rb.y, rb.r / 15.0 * 1.1, Color::WHITE);
+    pen.button(art, rb, slate, pointer.hover == Some(BtnId::Reroll));
+    pen.tex(&art.icon_reroll, rb.x, rb.y, rb.r / 15.0 * 1.05, Color::WHITE);
     if me.rr > 0.0 {
-        arc(g, w, h, rb.c(), rb.r + 5.0, PI / 2.0, me.rr / REROLL_CD, bca(crate::art::INK, 0.45));
+        arc(g, w, h, rb.c(), rb.r + 4.0, PI / 2.0, me.rr / REROLL_CD, bca(pal::CREAM, 0.5));
     }
     let sb = l.shovel;
-    pen.button(art, sb, if gm.shovel { bc(0xffd36b) } else { paper }, pointer.hover == Some(BtnId::Shovel));
-    pen.tex(&art.icon_shovel, sb.x, sb.y, sb.r / 15.0 * 1.1, Color::WHITE);
+    pen.button(art, sb, if gm.shovel { bc(pal::GOLD) } else { slate }, pointer.hover == Some(BtnId::Shovel));
+    pen.tex(&art.icon_shovel, sb.x, sb.y, sb.r / 15.0 * 1.05, Color::WHITE);
     if gm.view != 0 {
         let hb = l.home;
         let urgent = gm.alert > 0.0 || gm.isl[0].has_threats();
         let pul = if urgent { 1.0 + (t * 8.0).sin() * 0.08 } else { 1.0 };
-        pen.button(art, Btn { r: hb.r * pul, ..hb }, if gm.isl[0].has_threats() { bc(0xffc0b5) } else { paper }, pointer.hover == Some(BtnId::Home));
+        pen.button(art, Btn { r: hb.r * pul, ..hb }, if gm.isl[0].has_threats() { bc(pal::RED) } else { slate }, pointer.hover == Some(BtnId::Home));
         pen.tex(&art.icon_home, hb.x, hb.y, hb.r / 15.0, Color::WHITE);
     }
-    // the card being dragged
     if let Some(d) = pointer.drag.as_ref() {
         if d.moved {
             if let Some(c) = me.hand[d.si].card {
@@ -675,16 +721,15 @@ fn draw_play(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
 fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, i: usize) {
     let s = &gm.players[0].hand[i];
     let r = l.cards[i];
-    let ink = bc(crate::art::INK);
     let sel = gm.sel == Some(i);
     let hov = pointer.hover_card == Some(i) && s.card.is_some();
     let lift = if sel { -14.0 } else if hov { -5.0 } else { 0.0 };
     let wig = if s.wig > 0.0 { (s.wig * 30.0).sin() * 5.0 * s.wig } else { 0.0 };
     let (cx, cy) = (r.x + r.w / 2.0 + wig, r.y + r.h / 2.0 + lift);
     let Some(card) = s.card else {
-        pen.rrect(art, r.x, r.y, r.w, r.h, 12.0, Some(bca(0xfff6e4, 0.45)), Some(bca(crate::art::INK, 0.35)));
+        pen.rrect(art, r.x, r.y, r.w, r.h, 10.0, Some(bca(pal::SLATE, 0.4)), Some(bca(pal::CREAM, 0.2)));
         let k = 1.0 - (s.cd / sim::CARD_CD).clamp(0.0, 1.0);
-        arc(g, l.w, l.h, Vec2::new(cx, cy), r.w * 0.2, -PI / 2.0 - k * TAU + TAU, k, bc(0x7fc76f));
+        arc(g, l.w, l.h, Vec2::new(cx, cy), r.w * 0.22, -PI / 2.0 - k * TAU + TAU, k, bc(pal::GOLD));
         pen.tex(&art.sprout_on, cx, cy + 2.0, 0.4 + k * 0.8, Color::WHITE.with_alpha(0.4 + k * 0.6));
         return;
     };
@@ -692,19 +737,19 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
     let (w, h) = (r.w * flip, r.h);
     let x0 = cx - w / 2.0;
     let y0 = cy - h / 2.0;
-    pen.rrect(art, x0 + 2.0, y0 + 5.0 - lift * 0.4, w, h, 12.0, Some(Color::srgba(0.16, 0.12, 0.12, 0.2)), None);
+    pen.rrect(art, x0 + 2.0, y0 + 6.0 - lift * 0.4, w, h, 10.0, Some(Color::srgba(0.02, 0.06, 0.08, 0.35)), None);
     let fill = match card {
-        Card::Storm | Card::Beetle => bc(0x6b5880),
-        Card::Shield => bc(0xdff2ff),
-        _ => bc(0xfff6e4),
+        Card::Storm | Card::Beetle => bc(0x3a2f45),
+        Card::Shield => bc(0xcfe3ea),
+        _ => bc(0xefe6d2),
     };
-    pen.rrect(art, x0, y0, w, h, 12.0, Some(fill), Some(if sel { bc(TEAM[0].1) } else { ink }));
+    pen.rrect(art, x0, y0, w, h, 10.0, Some(fill), Some(if sel { bc(pal::GOLD) } else { bc(pal::SLATE) }));
     if sel {
-        pen.rrect(art, x0 + 1.5, y0 + 1.5, w - 3.0, h - 3.0, 10.5, None, Some(bc(TEAM[0].1)));
+        pen.rrect(art, x0 + 1.5, y0 + 1.5, w - 3.0, h - 3.0, 8.5, None, Some(bc(pal::GOLD)));
     }
     if let Card::Nature(sp) = card {
-        let band = if def(sp).plant { bca(0x7fc76f, 0.22) } else { bca(0xffaa6e, 0.22) };
-        pen.rect(x0 + 2.5, y0 + h * 0.62, (w - 5.0).max(0.0), h * 0.26, art, band);
+        let band = if def(sp).plant { bca(0x5a9a3c, 0.28) } else { bca(0xd9853a, 0.28) };
+        pen.rect(x0 + 2.5, y0 + h * 0.6, (w - 5.0).max(0.0), h * 0.28, art, band);
     }
     if flip > 0.3 {
         card_icon(pen, art, card, cx, cy - h * 0.06, r.w / 64.0 * flip.min(1.0), 1.0);
@@ -714,20 +759,20 @@ fn draw_card(pen: &mut Pen, g: &mut Gizmos<HudGizmos>, art: &Art, l: &Layout, gm
                 pen.tex(if def(sp).plant { &art.glyph_leaf } else { &art.glyph_paw }, gx, gy, 1.0, Color::WHITE);
                 let terr = def(sp).terr;
                 let chips: Vec<u32> = if terr.contains(&Terr::Sand) && terr.len() > 1 {
-                    vec![0xa8d77a, 0xf5e0a6]
+                    vec![0x5f9a3a, 0xe3c07e]
                 } else {
                     vec![match terr[0] {
-                        Terr::Pond => 0x86cde6,
-                        Terr::Sand => 0xf5e0a6,
-                        _ => 0xa8d77a,
+                        Terr::Pond => 0x3d9ec2,
+                        Terr::Sand => 0xe3c07e,
+                        _ => 0x5f9a3a,
                     }]
                 };
                 let n = chips.len() as f32;
                 for (j, c) in chips.iter().enumerate() {
                     let x = cx + (j as f32 - (n - 1.0) / 2.0) * 13.0;
-                    let y = y0 + h - 11.0;
-                    pen.tex(&art.hex, x, y, 6.5 / HS, ink);
-                    pen.tex(&art.hex, x, y, 5.2 / HS, bc(*c));
+                    let y = y0 + h - 10.0;
+                    pen.tex(&art.hex, x, y, 6.5 / HS, bc(pal::SLATE));
+                    pen.tex(&art.hex, x, y, 5.3 / HS, bc(*c));
                 }
             }
             Card::Storm | Card::Beetle => pen.tex(&art.glyph_target, gx, gy, 1.0, Color::WHITE),
@@ -748,7 +793,7 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, view: &MainVie
     let me = &gm.players[0];
     let hand = |pen: &mut Pen, p: Vec2, press: f32| {
         if press > 0.0 {
-            pen.ring(art, p.x, p.y, 10.0 + press * 12.0, Color::WHITE.with_alpha(0.9));
+            pen.ring(art, p.x, p.y, 10.0 + press * 12.0, bca(pal::CREAM, 0.9));
         }
         pen.tex(&art.hand, p.x, p.y, 1.0, Color::WHITE);
     };
@@ -794,47 +839,148 @@ fn draw_tutorial(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, view: &MainVie
     pen.layer = old;
 }
 
+/* ---------------- results show ---------------- */
+
+/// How excited the crowd is at this point of the show (0..1).
+fn excitement(end_t: f32) -> f32 {
+    let mut e: f32 = 0.15;
+    for (rank, &at) in sim::REVEAL_AT.iter().enumerate() {
+        let since = end_t - at;
+        if since >= 0.0 {
+            let peak = if rank == 0 { 1.0 } else { 0.55 };
+            let sustain = if rank == 0 { 0.65 } else { 0.25 };
+            e = e.max(sustain + (peak - sustain) * (-since * 1.5).exp());
+        }
+    }
+    if end_t > 0.2 && end_t < sim::REVEAL_AT[3] {
+        e = e.max(0.3);
+    }
+    e
+}
+
+fn update_show(state: &mut HudState, gm: &Game, l: &Layout, rng: &mut Rng, dt: f32, pending: &mut Pending) {
+    for c in &mut state.confetti {
+        c.x += c.vx * dt;
+        c.y += c.vy * dt;
+        c.r += c.vr * dt;
+        if c.y > l.h + 20.0 {
+            c.y = -10.0;
+            c.x = rng.f() * l.w;
+        }
+    }
+    // fireworks after the winner is revealed
+    let since = gm.end_t - sim::REVEAL_AT[0];
+    let win = gm.ranks.first() == Some(&0);
+    if since > 0.0 && since < if win { 14.0 } else { 6.0 } {
+        state.next_rocket -= dt;
+        if state.next_rocket <= 0.0 {
+            state.next_rocket = if win { 0.35 } else { 0.8 } + rng.f() * 0.4;
+            state.rockets.push(Rocket { x: l.w * (0.12 + rng.f() * 0.76), y: l.h + 10.0, ty: l.h * (0.1 + rng.f() * 0.3), vy: -l.h * 1.1, c: *rng.pick(&[pal::GOLD, TEAM[0].0, TEAM[1].0, 0x5fb04a, TEAM[3].0, 0xffffff]) });
+        }
+    }
+    let mut bursts = vec![];
+    for r in &mut state.rockets {
+        r.y += r.vy * dt;
+        if r.y <= r.ty {
+            bursts.push((r.x, r.y, r.c));
+        }
+    }
+    state.rockets.retain(|r| r.y > r.ty);
+    for (x, y, c) in bursts {
+        if rng.chance(0.6) {
+            pending.ev.push(Ev::Sfx(Sfx::Firework));
+        }
+        for i in 0..44 {
+            let a = i as f32 / 44.0 * TAU + rng.f() * 0.1;
+            let sp = 120.0 + rng.f() * 110.0;
+            state.sparks.push(Spark { x, y, vx: a.cos() * sp, vy: a.sin() * sp, life: 0.0, max: 1.0 + rng.f() * 0.6, c: if rng.chance(0.3) { 0xffffff } else { c } });
+        }
+    }
+    for s in &mut state.sparks {
+        s.life += dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.vy += 120.0 * dt;
+        s.vx *= 0.985;
+        s.vy *= 0.985;
+    }
+    state.sparks.retain(|s| s.life < s.max);
+}
+
 fn draw_end(pen: &mut Pen, art: &Art, l: &Layout, gm: &Game, pointer: &Pointer, state: &HudState, t: f32) {
-    let k = (gm.end_t / 0.6).clamp(0.0, 1.0);
-    // dim sits under the island panels (which are live cameras)
-    pen.rect(0.0, 0.0, l.w, l.h, art, Color::srgba(0.24, 0.27, 0.31, 0.55 * k));
+    let et = gm.end_t;
+    let k = (et / 0.6).clamp(0.0, 1.0);
+    // the dim sits under the island panels (they are live cameras)
+    pen.rect(0.0, 0.0, l.w, l.h, art, bca(0x0d161c, 0.72 * k));
     let old = pen.layer;
     pen.layer = LAYER_TOP;
-    let ink = bc(crate::art::INK);
+    // fireworks
+    for r in &state.rockets {
+        pen.circle(art, r.x, r.y, 2.5, bc(0xfff1c0));
+        pen.circle(art, r.x, r.y + 10.0, 1.6, bca(0xfff1c0, 0.5));
+    }
+    for s in &state.sparks {
+        let a = 1.0 - s.life / s.max;
+        pen.tex(&art.spark, s.x, s.y, 0.9, bca(s.c, a));
+    }
+    // drumroll: a pulsing question over the empty stage
+    if et > 0.2 && et < sim::REVEAL_AT[3] {
+        let pul = 1.0 + (et * 18.0).sin() * 0.06;
+        pen.text(l.w / 2.0, l.h * 0.4, 70.0 * pul, bca(pal::CREAM, 0.85), "?");
+    }
+    let slate = bc(pal::SLATE);
     for (rank, &p) in gm.ranks.iter().enumerate() {
         let Some(r) = l.end_panels.get(p).copied().flatten() else { continue };
-        let edge = if p == 0 { bc(TEAM[0].1) } else { ink };
-        pen.rrect(art, r.x, r.y, r.w, r.h, 16.0, None, Some(edge));
-        if p == 0 {
-            pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 14.5, None, Some(edge));
-        }
-        let pl = [46.0, 34.0, 26.0, 20.0][rank];
-        let plc = [0xffd96b, 0xe2e6ee, 0xf0c29a, 0xd9d2c6][rank];
-        pen.rrect(art, r.x + r.w * 0.15, r.y + r.h + 8.0, r.w * 0.7, pl, 8.0, Some(bc(plc)), Some(ink));
-        for j in 0..=rank {
-            pen.circle(art, r.x + r.w / 2.0 + (j as f32 - rank as f32 / 2.0) * 10.0, r.y + r.h + 8.0 + pl / 2.0, 3.0, ink);
-        }
+        pen.sliced(&art.rrect_mask, r.x, r.y, r.w, r.h, 14.0, bc(0x0d161c).mix(&bc(pal::SEA), 1.0 - 0.72 * k));
+        let edge = if rank == 0 { bc(pal::GOLD) } else { slate };
+        pen.rrect(art, r.x, r.y, r.w, r.h, 14.0, None, Some(edge));
+        pen.rrect(art, r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, 12.5, None, Some(edge));
+        let pl = [52.0, 38.0, 28.0, 20.0][rank];
+        let plc = [pal::GOLD, 0xc9ced6, 0xc8875a, 0x6b7a80][rank];
+        pen.rrect(art, r.x + r.w * 0.12, r.y + r.h + 8.0, r.w * 0.76, pl, 6.0, Some(bc(plc)), None);
+        pen.rect(r.x + r.w * 0.12 + 3.0, r.y + r.h + 8.0 + pl - 6.0, r.w * 0.76 - 6.0, 4.0, art, bca(pal::SLATE, 0.25));
+        // score counts up after the reveal
+        let since = (et - sim::REVEAL_AT[rank]).max(0.0);
+        let shown = gm.isl[p].score * (since / 0.9).clamp(0.0, 1.0);
+        pen.text(r.x + r.w / 2.0, r.y + r.h + 8.0 + pl / 2.0, (pl * 0.55).clamp(14.0, 26.0), if rank == 0 { slate } else { bc(pal::CREAM) }, &format!("{shown:.0}"));
         let mood = if rank == 0 { 2 } else if rank == 3 { 0 } else { 1 };
-        pen.tex(&art.avatars[p][mood], r.x + r.w / 2.0, r.y - 4.0, if rank == 0 { 22.0 } else { 17.0 } / 20.0, Color::WHITE);
+        let hop = if rank == 0 { ((t * 5.0).sin()).max(0.0) * 8.0 } else { 0.0 };
+        pen.tex(&art.avatars[p][mood], r.x + r.w / 2.0, r.y - 6.0 - hop, if rank == 0 { 1.0 } else { 0.78 }, Color::WHITE);
         if rank == 0 {
-            pen.tex(&art.crown, r.x + r.w / 2.0, r.y - 34.0 + (t * 3.0).sin() * 2.0, 1.0, Color::WHITE);
+            pen.tex(&art.crown, r.x + r.w / 2.0, r.y - 50.0 - hop + (t * 3.0).sin() * 2.0, 1.0, Color::WHITE);
         }
-        let kk = (gm.isl[p].score / GOAL).clamp(0.0, 1.0);
-        pen.rrect(art, r.x + 10.0, r.y + r.h - 16.0, r.w - 20.0, 8.0, 4.0, Some(Color::WHITE.with_alpha(0.8)), None);
+        let kk = (gm.isl[p].score / sim::GOAL).clamp(0.0, 1.0) * (since / 0.9).clamp(0.0, 1.0);
+        pen.rrect(art, r.x + 10.0, r.y + r.h - 16.0, r.w - 20.0, 8.0, 4.0, Some(bca(pal::SLATE, 0.8)), None);
         pen.rrect(art, r.x + 10.0, r.y + r.h - 16.0, ((r.w - 20.0) * kk).max(8.0), 8.0, 4.0, Some(bc(TEAM[p].0)), None);
-        if kk >= 1.0 {
-            pen.tex(&art.trophy, r.x + r.w - 12.0, r.y + r.h - 12.0, 0.7, Color::WHITE);
+    }
+    // the crowd: rows of pawns bouncing with the mood of the show
+    let ex = excitement(et);
+    let mut crng = Rng::new(state.crowd_seed | 1);
+    let spacing = 26.0;
+    let cols = (l.w / spacing) as usize + 2;
+    for row in 0..2 {
+        let yb = l.h - 8.0 - row as f32 * 22.0;
+        for i in 0..cols {
+            let x = i as f32 * spacing - 8.0 + if row == 1 { spacing / 2.0 } else { 0.0 };
+            let c = *crng.pick(&[TEAM[0].0, TEAM[1].0, TEAM[2].0, TEAM[3].0, 0x8a9aa6, 0xc7b89a, 0x5f9a5a]);
+            let ph = crng.f() * TAU;
+            let speed = 7.0 + crng.f() * 5.0;
+            let jump = ((t * speed + ph).sin()).max(0.0) * 16.0 * ex;
+            let s = if row == 1 { 0.62 } else { 0.72 };
+            let shade_k = if row == 1 { 0.62 } else { 0.85 };
+            let col = crate::art::shade(c, shade_k);
+            pen.tex_full(&art.pawn, x, yb - jump - 10.0, Vec2::splat(s), ((t * speed * 0.5 + ph).sin()) * 0.12 * ex, false, bc(col));
         }
     }
     for c in &state.confetti {
         let spr = Sprite { image: art.pixel.h.clone(), custom_size: Some(Vec2::new(8.0, 5.0)), color: bc(c.c), ..default() };
         pen.spawn(spr, c.x, c.y, c.r, Vec2::ONE);
     }
-    if gm.end_t > 1.2 {
+    if et > sim::END_BUTTONS_AT {
         pen.button(art, l.end_again, bc(TEAM[0].0), pointer.hover == Some(BtnId::Again));
-        pen.tex(&art.icon_reroll, l.end_again.x, l.end_again.y, 1.6, Color::WHITE);
-        pen.button(art, l.end_home, bc(0xfff6e4), pointer.hover == Some(BtnId::EndHome));
-        pen.tex(&art.icon_home, l.end_home.x, l.end_home.y, 1.5, Color::WHITE);
+        pen.tex(&art.icon_reroll, l.end_again.x, l.end_again.y, 1.5, Color::WHITE);
+        pen.button(art, l.end_home, slate, pointer.hover == Some(BtnId::EndHome));
+        pen.tex(&art.icon_home, l.end_home.x, l.end_home.y, 1.4, Color::WHITE);
     }
     pen.layer = old;
 }

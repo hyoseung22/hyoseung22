@@ -199,7 +199,7 @@ fn setup(
 ) {
     let art = art::build_art(&mut images);
     commands.insert_resource(audio::build_sounds(&mut audio));
-    let font = Font::try_from_bytes(include_bytes!("../assets/fonts/Baloo2-ExtraBold.ttf").to_vec()).expect("embedded font");
+    let font = Font::try_from_bytes(include_bytes!("../assets/fonts/BricolageGrotesque-ExtraBold.ttf").to_vec()).expect("embedded font");
     commands.insert_resource(Fonts { title: fonts.add(font) });
 
     let (cfg, _) = gizmo_store.config_mut::<world::WorldGizmos>();
@@ -281,6 +281,8 @@ fn play_sounds(
     session: Res<Session>,
     time: Res<Time>,
     mut music_t: Local<f32>,
+    mut note: Local<usize>,
+    mut drone_t: Local<i32>,
     mut rng: Local<Option<Rng>>,
 ) {
     let rng = rng.get_or_insert_with(Rng::from_time);
@@ -300,15 +302,20 @@ fn play_sounds(
     if settings.muted || paused || session.scene == Scene::End {
         return;
     }
+    // a wandering lute melody in D dorian over a slow drone
     *music_t -= time.delta_secs();
     if *music_t <= 0.0 {
-        *music_t = 0.52;
-        if rng.chance(0.55) {
-            let i = rng.below(12);
-            commands.spawn((AudioPlayer::new(sounds.notes[i].clone()), PlaybackSettings::DESPAWN));
+        *music_t = *rng.pick(&[0.36, 0.36, 0.54, 0.72]);
+        if rng.chance(0.8) {
+            let step = *rng.pick(&[-2i32, -1, -1, 1, 1, 2, 0]);
+            *note = (*note as i32 + step).clamp(0, 7) as usize;
+            commands.spawn((AudioPlayer::new(sounds.notes[*note].clone()), PlaybackSettings::DESPAWN));
         }
-        if rng.chance(0.12) {
-            commands.spawn((AudioPlayer::new(sounds.notes[12].clone()), PlaybackSettings::DESPAWN));
+        *drone_t -= 1;
+        if *drone_t <= 0 {
+            *drone_t = 9;
+            let d = rng.below(sounds.drones.len());
+            commands.spawn((AudioPlayer::new(sounds.drones[d].clone()), PlaybackSettings::DESPAWN));
         }
     }
 }

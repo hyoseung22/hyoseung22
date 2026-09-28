@@ -1,13 +1,14 @@
 //! The world: cameras, island sprites, creatures, threats, particles and in-world overlays.
 
-use crate::art::{self, bc, bca, Art, Tex};
+use crate::art::{self, bc, bca, pal, Art, Tex};
 use crate::eco::{def, need_w, Sp};
 use crate::hud::Layout;
 use crate::input::Pointer;
 use crate::island::{Terr, HS, SQ};
 use crate::rng::Rng;
 use crate::sim::{self, state_of, Card, Ev, Island, PKind, PLAYERS, STORM_T, TITLE, WITHER_T};
-use crate::{Ephemeral, Pending, Scene, Session, LAYER_BG, LAYER_OVER, LAYER_WORLD};
+use bevy::text::TextBounds;
+use crate::{Ephemeral, Fonts, Pending, Scene, Session, LAYER_BG, LAYER_OVER, LAYER_WORLD};
 use bevy::prelude::*;
 use bevy::render::camera::{ClearColorConfig, Viewport};
 use bevy::render::view::RenderLayers;
@@ -71,7 +72,7 @@ pub struct BgCam;
 pub struct UiCam;
 
 pub fn spawn_cameras(commands: &mut Commands) {
-    commands.spawn((Camera2d, Camera { order: 0, clear_color: ClearColorConfig::Custom(bc(0x8ed5d2)), ..default() }, RenderLayers::layer(LAYER_BG), BgCam));
+    commands.spawn((Camera2d, Camera { order: 0, clear_color: ClearColorConfig::Custom(bc(pal::SEA)), ..default() }, RenderLayers::layer(LAYER_BG), BgCam));
     commands.spawn((
         Camera2d,
         Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
@@ -81,7 +82,7 @@ pub fn spawn_cameras(commands: &mut Commands) {
     for i in 0..PLAYERS {
         commands.spawn((
             Camera2d,
-            Camera { order: 11 + i as isize, clear_color: ClearColorConfig::Custom(bc(0xa9dfdb)), is_active: false, ..default() },
+            Camera { order: 11 + i as isize, clear_color: ClearColorConfig::Custom(bc(pal::PORTRAIT)), is_active: false, ..default() },
             RenderLayers::layer(LAYER_WORLD),
             PortraitCam(i),
         ));
@@ -101,11 +102,11 @@ pub struct Wave {
 }
 
 pub fn spawn_background(commands: &mut Commands, art: &Art) {
-    commands.spawn((Sprite { image: art.pixel.h.clone(), color: bc(0x8ed5d2), ..default() }, Transform::from_xyz(0.0, 0.0, 0.0), RenderLayers::layer(LAYER_BG), SeaGrad));
+    commands.spawn((Sprite { image: art.pixel.h.clone(), color: bc(pal::SEA), ..default() }, Transform::from_xyz(0.0, 0.0, 0.0), RenderLayers::layer(LAYER_BG), SeaGrad));
     let mut rng = Rng::new(3);
     for _ in 0..70 {
         commands.spawn((
-            Sprite { image: art.wave.h.clone(), color: bca(0xb9e9e2, 0.6), custom_size: Some(art.wave.size), ..default() },
+            Sprite { image: art.wave.h.clone(), color: bca(pal::WAVE, 0.45), custom_size: Some(art.wave.size), ..default() },
             Transform::from_xyz(0.0, 0.0, 1.0),
             RenderLayers::layer(LAYER_BG),
             Wave { fx: rng.f(), fy: rng.f(), s: 0.6 + rng.f() * 0.8, p: rng.f() * TAU },
@@ -131,12 +132,13 @@ pub fn update_cameras(
     mut portraits: Query<(&PortraitCam, &mut Camera, &mut Transform, &mut Projection), Without<MainCam>>,
     mut bg: Query<(&mut Transform, &mut Sprite), (With<SeaGrad>, Without<MainCam>, Without<PortraitCam>, Without<Wave>)>,
     mut waves: Query<(&Wave, &mut Transform), (Without<MainCam>, Without<PortraitCam>, Without<SeaGrad>)>,
+    mut smooth: Local<Option<(usize, bool, f32, f32, f32)>>,
 ) {
     let (w, h) = (layout.w, layout.h);
     let t = session.t;
     for (mut tf, mut spr) in &mut bg {
         spr.custom_size = Some(Vec2::new(w + 4.0, h + 4.0));
-        spr.color = bc(0x8ed5d2);
+        spr.color = bc(pal::SEA);
         tf.translation = Vec3::ZERO;
     }
     for (wv, mut tf) in &mut waves {
@@ -151,7 +153,17 @@ pub fn update_cameras(
         (_, Some(g)) => (g.view, &g.isl[g.view]),
     };
     let a = if session.scene == Scene::Title { layout.title_isle } else { layout.isle };
-    let (s, cx, cy) = fit(isl, a.x, a.y, a.w, a.h);
+    let (ts, tcx, tcy) = fit(isl, a.x, a.y, a.w, a.h);
+    // ease toward the target so a growing island zooms out gently
+    let title = session.scene == Scene::Title;
+    let (s, cx, cy) = match *smooth {
+        Some((sl, ti, s0, cx0, cy0)) if sl == slot && ti == title => {
+            let k = 1.0 - (-time.delta_secs() * 4.0).exp();
+            (s0 + (ts - s0) * k, cx0 + (tcx - cx0) * k, cy0 + (tcy - cy0) * k)
+        }
+        _ => (ts, tcx, tcy),
+    };
+    *smooth = Some((slot, title, s, cx, cy));
     let bob = if session.scene == Scene::Title { (t * 0.9).sin() * 4.0 } else { 0.0 };
     *view = MainView { s, cx, cy: cy + bob };
     let shake = session.game.as_ref().map(|g| g.shake).unwrap_or(0.0);
@@ -186,7 +198,7 @@ pub fn update_cameras(
         cam.is_active = true;
         cam.viewport = Some(Viewport { physical_position: UVec2::new(x0, y0), physical_size: UVec2::new(x1 - x0, y1 - y0), ..default() });
         let viewing = session.game.as_ref().map(|g| g.view == pc.0 && session.scene == Scene::Play).unwrap_or(false);
-        cam.clear_color = ClearColorConfig::Custom(if viewing { bc(0xd6f1ee) } else { bc(0xa9dfdb) });
+        cam.clear_color = ClearColorConfig::Custom(if viewing { bc(pal::PORTRAIT_VIEW) } else { bc(pal::PORTRAIT) });
         let g = session.game.as_ref().unwrap();
         let (vw, vh) = ((x1 - x0) as f32 / sf, (y1 - y0) as f32 / sf);
         let (s, cx, cy) = fit(&g.isl[pc.0], 0.0, 6.0, vw, vh - 6.0);
@@ -199,7 +211,7 @@ pub fn update_cameras(
 /* ---------------- island base sprites ---------------- */
 
 #[derive(Component)]
-pub struct IslandPart;
+pub struct IslandPart(pub usize);
 #[derive(Component)]
 pub struct LushLayer(pub usize);
 #[derive(Component)]
@@ -210,11 +222,37 @@ pub struct SeaRing(pub usize);
 pub struct VisIndex {
     gen: u32,
     title: bool,
+    built: HashMap<usize, u32>,
     map: HashMap<(usize, u32), Entity>,
 }
 
 #[derive(Component)]
 pub struct LifeVis;
+
+fn build_island(commands: &mut Commands, images: &mut Assets<Image>, art: &Art, slot: usize, isl: &Island) {
+    let o = origin(slot);
+    let base = |tex: Tex, z: f32, color: Color| {
+        (
+            Sprite { image: tex.h.clone(), custom_size: Some(tex.size), anchor: Anchor::Custom(tex.anchor), color, ..default() },
+            Transform::from_xyz(o.x, o.y, z),
+            RenderLayers::layer(LAYER_WORLD),
+            IslandPart(slot),
+        )
+    };
+    commands.spawn((base(art::island_sea_tex(images, &isl.map), 0.0, Color::WHITE), SeaRing(slot)));
+    commands.spawn(base(art::island_tex(images, &isl.map, 0.0), 0.1, Color::WHITE));
+    commands.spawn((base(art::island_tex(images, &isl.map, 1.0), 0.2, Color::WHITE.with_alpha(isl.lush)), LushLayer(slot)));
+    for t in isl.map.tiles.iter().filter(|t| t.t == Terr::Rock) {
+        let tex = &art.rock[if t.shade > 0.5 { 1 } else { 0 }];
+        let p = wpos(slot, t.x, t.y + 3.0);
+        commands.spawn((
+            Sprite { image: tex.h.clone(), custom_size: Some(tex.size), anchor: Anchor::Custom(tex.anchor), ..default() },
+            Transform::from_xyz(p.x, p.y, zfor(t.y + 3.0)),
+            RenderLayers::layer(LAYER_WORLD),
+            IslandPart(slot),
+        ));
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn sync_islands(
@@ -223,50 +261,33 @@ pub fn sync_islands(
     mut images: ResMut<Assets<Image>>,
     art: Res<Art>,
     mut index: ResMut<VisIndex>,
-    parts: Query<Entity, Or<(With<IslandPart>, With<LifeVis>, With<Particle>)>>,
+    parts: Query<(Entity, Option<&IslandPart>), Or<(With<IslandPart>, With<LifeVis>, With<Particle>, With<Popup>)>>,
     mut lush: Query<(&LushLayer, &mut Sprite), Without<SeaRing>>,
     mut sea: Query<(&SeaRing, &mut Transform), Without<LushLayer>>,
 ) {
     let title = session.scene == Scene::Title || session.game.is_none();
     if index.gen != session.gen || index.title != title {
-        for e in &parts {
+        for (e, _) in &parts {
             commands.entity(e).despawn();
         }
         index.map.clear();
+        index.built.clear();
         index.gen = session.gen;
         index.title = title;
-        let islands: Vec<(usize, &Island)> = if title { vec![(TITLE, &session.title)] } else { session.game.as_ref().unwrap().isl.iter().enumerate().collect() };
-        for (slot, isl) in islands {
-            let o = origin(slot);
-            let spawn_tex = |commands: &mut Commands, tex: Tex, z: f32, color: Color| {
-                commands
-                    .spawn((
-                        Sprite { image: tex.h.clone(), custom_size: Some(tex.size), anchor: Anchor::Custom(tex.anchor), color, ..default() },
-                        Transform::from_xyz(o.x, o.y, z),
-                        RenderLayers::layer(LAYER_WORLD),
-                        IslandPart,
-                    ))
-                    .id()
-            };
-            let sea_t = art::island_sea_tex(&mut images, &isl.map);
-            let e = spawn_tex(&mut commands, sea_t, 0.0, Color::WHITE);
-            commands.entity(e).insert(SeaRing(slot));
-            let dry = art::island_tex(&mut images, &isl.map, 0.0);
-            spawn_tex(&mut commands, dry, 0.1, Color::WHITE);
-            let lushed = art::island_tex(&mut images, &isl.map, 1.0);
-            let e = spawn_tex(&mut commands, lushed, 0.2, Color::WHITE.with_alpha(isl.lush));
-            commands.entity(e).insert(LushLayer(slot));
-            for t in isl.map.tiles.iter().filter(|t| t.t == Terr::Rock) {
-                let tex = &art.rock[if t.shade > 0.5 { 1 } else { 0 }];
-                let p = wpos(slot, t.x, t.y + 3.0);
-                commands.spawn((
-                    Sprite { image: tex.h.clone(), custom_size: Some(tex.size), anchor: Anchor::Custom(tex.anchor), ..default() },
-                    Transform::from_xyz(p.x, p.y, zfor(t.y + 3.0)),
-                    RenderLayers::layer(LAYER_WORLD),
-                    IslandPart,
-                ));
+    }
+    let islands: Vec<(usize, &Island)> = if title { vec![(TITLE, &session.title)] } else { session.game.as_ref().unwrap().isl.iter().enumerate().collect() };
+    for (slot, isl) in &islands {
+        if index.built.get(slot) == Some(&isl.map_ver) {
+            continue;
+        }
+        // first build, or the island grew: redraw its base
+        for (e, part) in &parts {
+            if part.map(|p| p.0 == *slot).unwrap_or(false) {
+                commands.entity(e).despawn();
             }
         }
+        build_island(&mut commands, &mut images, &art, *slot, isl);
+        index.built.insert(*slot, isl.map_ver);
     }
     let get = |slot: usize| -> Option<&Island> {
         if slot == TITLE {
@@ -289,12 +310,14 @@ pub fn sync_islands(
 
 const BEETLE_KEY: u32 = 1 << 24;
 const STORM_KEY: u32 = 2 << 24;
+const WHALE_KEY: u32 = 3 << 24;
 
 fn flips(sp: Sp) -> bool {
     matches!(sp, Sp::Rabbit | Sp::Fox | Sp::Bird)
 }
 
 /// Transform for a creature this frame: (island-space offset, rotation, scale xy, flip, alpha, tint).
+/// Animals are board-game pieces: they stand still and hop from tile to tile.
 fn creature_pose(e: &sim::Creature, t: f32) -> (Vec2, f32, Vec2, bool, f32, f32) {
     let st = state_of(e.hd);
     let lively = match st {
@@ -307,31 +330,37 @@ fn creature_pose(e: &sim::Creature, t: f32) -> (Vec2, f32, Vec2, bool, f32, f32)
     let mut sc = Vec2::ONE;
     let mut flip = flips(e.sp) && e.v % 2 == 1;
     let ph = e.ph;
+    let plant = def(e.sp).plant;
     match e.sp {
-        Sp::Flower => rot = (t * 2.0 + ph).sin() * 0.07 * lively,
-        Sp::Tree => rot = (t * 1.2 + ph).sin() * 0.025 * lively,
-        Sp::Palm => rot = (t * 1.4 + ph).sin() * 0.035 * lively,
-        Sp::Bush => sc.y = 1.0 + (t * 1.5 + ph).sin() * 0.03 * lively,
-        Sp::Mushroom => sc.y = 1.0 + (t * 2.0 + ph).sin() * 0.03 * lively,
-        Sp::Lily => off.y = (t * 1.5 + ph).sin() * 0.8,
-        Sp::Bee => {
-            let a = t * 1.4 * lively + ph;
-            off = Vec2::new(a.cos() * 8.0, -24.0 + (t * 3.0 + ph).sin() * 3.0 * lively);
-            flip = a.sin() > 0.0;
-        }
-        Sp::Rabbit => {
-            if st >= 1 {
-                off.y = -(t * 3.2 + ph).sin().max(0.0) * 4.0 * if st == 2 { 1.0 } else { 0.4 };
+        Sp::Flower => rot = (t * 2.0 + ph).sin() * 0.06 * lively,
+        Sp::Tree => rot = (t * 1.2 + ph).sin() * 0.02 * lively,
+        Sp::Palm => rot = (t * 1.4 + ph).sin() * 0.03 * lively,
+        Sp::Bush | Sp::Mushroom => sc.y = 1.0 + (t * 1.5 + ph).sin() * 0.02 * lively,
+        Sp::Lily => off.y = (t * 1.5 + ph).sin() * 0.6,
+        _ => {}
+    }
+    if !plant {
+        // a pleased piece gets the odd little nudge
+        if st == 2 {
+            let k = ((t * 0.9 + ph) % 4.0).max(0.0);
+            if k < 0.4 {
+                rot = (k / 0.4 * PI * 2.0).sin() * 0.08;
             }
         }
-        Sp::Bird => {
-            if st == 2 {
-                off.y = -(t * 4.0 + ph).sin().max(0.0) * 3.0;
-            }
+        if e.hop > 0.0 {
+            let k = e.hop.clamp(0.0, 1.0);
+            off.y -= (k * PI).sin() * 22.0;
+            let dir = (e.tx - e.fx).signum();
+            rot = dir * (k * PI).sin() * 0.18;
+            flip = dir < 0.0;
+            let stretch = 1.0 + (k * PI).sin() * 0.08;
+            sc = Vec2::new(1.0 / stretch, stretch);
         }
-        Sp::Frog => off.y = (t * 2.0 + ph).sin() * 0.8,
-        Sp::Crab => off.x = (t * 1.8 * lively + ph).sin() * 3.0,
-        Sp::Fox => rot = (t * 3.0 * lively + ph).sin() * 0.03,
+        if e.jump > 0.0 {
+            let k = 1.0 - e.jump;
+            off.y -= (k * PI).sin() * 16.0;
+            rot += (k * TAU).sin() * 0.1;
+        }
     }
     let mut s = 1.0;
     let mut alpha = 1.0;
@@ -346,7 +375,7 @@ fn creature_pose(e: &sim::Creature, t: f32) -> (Vec2, f32, Vec2, bool, f32, f32)
     if e.dying == 0.0 && e.sad_t > 7.0 {
         off.x += (t * 30.0).sin() * ((e.sad_t - 7.0) / 9.0).clamp(0.0, 1.0) * 1.8;
     }
-    let tint = if st == 0 && e.dying == 0.0 { 0.82 } else { 1.0 };
+    let tint = if st == 0 && e.dying == 0.0 { 0.72 } else { 1.0 };
     (off, rot, sc * s, flip, alpha, tint)
 }
 
@@ -371,7 +400,7 @@ pub fn sync_life(
             let (off, rot, sc, flip, alpha, tint) = creature_pose(e, t);
             let tex = art.sp(e.sp, e.v).clone();
             let p = wpos(*slot, e.x + off.x, e.y + off.y);
-            let color = Color::srgba(tint, tint, tint * 1.04, alpha * if tint < 1.0 { 0.85 } else { 1.0 });
+            let color = Color::srgba(tint, tint * 0.98, tint * 0.96, alpha);
             want.push(((*slot, e.id), tex, p, rot, sc, flip, color, zfor(e.y)));
         }
         for b in &isl.beetles {
@@ -394,6 +423,17 @@ pub fn sync_life(
             let k = 1.5 * s.sc * (1.0 + s.pulse * 0.15);
             let p = wpos(*slot, s.cx, s.cy);
             want.push(((*slot, STORM_KEY + s.id), art.cloud.clone(), p, 0.0, Vec2::splat(k), false, Color::WHITE.with_alpha(alpha), 4.0));
+        }
+        if let Some(w) = &isl.whale {
+            let rise = (w.t / 0.6).clamp(0.0, 1.0);
+            let (dy, alpha, sc) = if !w.active() {
+                let k = (w.gone / 1.2).clamp(0.0, 1.0);
+                if w.caught { (-k * 60.0, 1.0 - k, 1.0 + k * 0.3) } else { (k * 14.0, 1.0 - k, 1.0) }
+            } else {
+                ((1.0 - rise) * 14.0 + (t * 2.0).sin() * 1.5, rise, 1.0)
+            };
+            let p = wpos(*slot, w.x, w.y + dy);
+            want.push(((*slot, WHALE_KEY), art.whale.clone(), p, (t * 1.3).sin() * 0.04, Vec2::splat(sc), w.x < isl.map.b.cx(), Color::WHITE.with_alpha(alpha), zfor(w.y)));
         }
     }
     for (key, tex, p, rot, sc, flip, color, z) in want {
@@ -443,17 +483,101 @@ pub struct Particle {
     rot: f32,
 }
 
-pub fn spawn_particles(mut commands: Commands, mut pending: ResMut<Pending>, art: Res<Art>, mut rng: Local<Option<Rng>>, count: Query<(), With<Particle>>) {
+/// Floating text in the world ("+3", "x4", "WOW!").
+#[derive(Component)]
+pub struct Popup {
+    life: f32,
+    max: f32,
+    vy: f32,
+    base: f32,
+}
+
+fn popup(commands: &mut Commands, fonts: &Fonts, slot: usize, x: f32, y: f32, text: &str, size: f32, color: Color, max: f32) {
+    let p = wpos(slot, x, y);
+    let font = TextFont { font: fonts.title.clone(), font_size: 64.0, ..default() };
+    let scale = size / 64.0;
+    commands
+        .spawn((
+            Text2d::new(text),
+            font.clone(),
+            TextColor(color),
+            TextBounds::default(),
+            Transform::from_xyz(p.x, p.y, 20.0).with_scale(Vec3::splat(scale * 0.2)),
+            RenderLayers::layer(LAYER_OVER),
+            Popup { life: 0.0, max, vy: 34.0, base: scale },
+        ))
+        .with_children(|c| {
+            // a dark copy behind for contrast
+            c.spawn((Text2d::new(text), font, TextColor(bc(pal::SLATE).with_alpha(0.75)), Transform::from_xyz(3.0, -4.0, -0.01)));
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_particles(
+    mut commands: Commands,
+    mut pending: ResMut<Pending>,
+    art: Res<Art>,
+    fonts: Res<Fonts>,
+    session: Res<Session>,
+    mut rng: Local<Option<Rng>>,
+    count: Query<(), With<Particle>>,
+) {
     let rng = rng.get_or_insert_with(Rng::from_time);
-    let mut budget = 500usize.saturating_sub(count.iter().count());
-    let events: Vec<Ev> = pending.ev.iter().filter(|e| matches!(e, Ev::Burst { .. } | Ev::Float { .. })).cloned().collect();
-    pending.ev.retain(|e| !matches!(e, Ev::Burst { .. } | Ev::Float { .. }));
+    let mut budget = 600usize.saturating_sub(count.iter().count());
+    let view = session.game.as_ref().map(|g| g.view).unwrap_or(TITLE);
+    let visual = |e: &Ev| matches!(e, Ev::Burst { .. } | Ev::Float { .. } | Ev::Score { .. } | Ev::Combo { .. } | Ev::Jackpot { .. } | Ev::Grow { .. } | Ev::Party { .. });
+    let events: Vec<Ev> = pending.ev.iter().filter(|e| visual(e)).cloned().collect();
+    pending.ev.retain(|e| !visual(e));
+    let mut bursts: Vec<(usize, f32, f32, PKind, u8, bool)> = vec![];
     for e in events {
-        let (slot, x, y, kind, n, float) = match e {
-            Ev::Burst { isl, x, y, kind, n } => (isl, x, y, kind, n, false),
-            Ev::Float { isl, x, y, kind } => (isl, x, y, kind, 1, true),
-            _ => continue,
-        };
+        match e {
+            Ev::Burst { isl, x, y, kind, n } => bursts.push((isl, x, y, kind, n, false)),
+            Ev::Float { isl, x, y, kind } => bursts.push((isl, x, y, kind, 1, true)),
+            Ev::Score { isl, x, y, amt } => {
+                if isl == view {
+                    popup(&mut commands, &fonts, isl, x, y, &format!("+{amt}"), 15.0, bc(pal::GOLD), 1.1);
+                }
+            }
+            Ev::Combo { n, x, y } => {
+                if view == 0 {
+                    let c = [pal::CREAM, pal::GOLD, 0xff9a3c, 0xff5a5a, 0xe86bff][((n as usize).saturating_sub(2)).min(4)];
+                    popup(&mut commands, &fonts, 0, x, y, &format!("x{n}"), 22.0 + n.min(8) as f32 * 3.0, bc(c), 1.2);
+                }
+            }
+            Ev::Jackpot { isl, x, y } => {
+                if isl == view {
+                    popup(&mut commands, &fonts, isl, x, y - 30.0, "MEGA!", 30.0, bc(pal::GOLD), 1.5);
+                }
+            }
+            Ev::Grow { isl, tiles } => {
+                if isl == view {
+                    if let Some(g) = session.game.as_ref() {
+                        let b = g.isl[isl].map.b;
+                        popup(&mut commands, &fonts, isl, b.cx(), b.y0 - 10.0, "WOW!", 54.0, bc(pal::CREAM), 1.8);
+                        for &t in &tiles {
+                            if let Some(tl) = g.isl[isl].map.tiles.get(t) {
+                                bursts.push((isl, tl.x, tl.y, PKind::Gold, 4, false));
+                            }
+                        }
+                    }
+                }
+            }
+            Ev::Party { isl } => {
+                if isl == view {
+                    if let Some(g) = session.game.as_ref() {
+                        let b = g.isl[isl].map.b;
+                        for _ in 0..8 {
+                            let x = b.x0 + rng.f() * (b.x1 - b.x0);
+                            let y = b.y0 + rng.f() * (b.y1 - b.y0);
+                            bursts.push((isl, x, y - 20.0, PKind::Gold, 5, false));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (slot, x, y, kind, n, float) in bursts {
         for _ in 0..n {
             if budget == 0 {
                 return;
@@ -461,22 +585,35 @@ pub fn spawn_particles(mut commands: Commands, mut pending: ResMut<Pending>, art
             budget -= 1;
             let (vx, vy, max) = if float {
                 ((rng.f() - 0.5) * 10.0, -26.0, 1.4)
-            } else if kind == PKind::Drop {
-                (-20.0, 200.0, 0.45)
             } else {
-                let a = rng.f() * TAU;
-                let sp = 20.0 + rng.f() * 50.0;
-                (a.cos() * sp, a.sin() * sp * 0.6 - 30.0, 0.6 + rng.f() * 0.6)
+                match kind {
+                    PKind::Drop => (-20.0, 200.0, 0.45),
+                    PKind::Dust => ((rng.f() - 0.5) * 40.0, -6.0 - rng.f() * 8.0, 0.45),
+                    PKind::Splash => ((rng.f() - 0.5) * 50.0, -60.0 - rng.f() * 70.0, 0.9),
+                    PKind::Gold => {
+                        let a = rng.f() * TAU;
+                        let sp = 40.0 + rng.f() * 90.0;
+                        (a.cos() * sp, a.sin() * sp * 0.6 - 70.0, 0.9 + rng.f() * 0.6)
+                    }
+                    _ => {
+                        let a = rng.f() * TAU;
+                        let sp = 20.0 + rng.f() * 50.0;
+                        (a.cos() * sp, a.sin() * sp * 0.6 - 30.0, 0.6 + rng.f() * 0.6)
+                    }
+                }
             };
             let (tex, color, size) = match kind {
                 PKind::Heart => (&art.heart, Color::WHITE, 1.0),
                 PKind::Spark => (&art.spark, Color::WHITE, 1.0),
-                PKind::Leaf => (&art.leaf, bc(*rng.pick(&[0x8fd070, 0x6fbe5c, 0xb6e37b])), 1.0),
-                PKind::LeafDead => (&art.leaf, bc(*rng.pick(&[0xc9a46a, 0xa88b5c])), 1.0),
-                PKind::Puff => (&art.circle, Color::WHITE, 0.2),
-                PKind::Soot => (&art.circle, bc(0x6d6478), 0.2),
-                PKind::Splat => (&art.circle, bc(0x9b7fc0), 0.16),
+                PKind::Leaf => (&art.leaf, bc(*rng.pick(&[0x5a9a3c, 0x4c8a35, 0x7fb34a])), 1.0),
+                PKind::LeafDead => (&art.leaf, bc(*rng.pick(&[0xa98a58, 0x8a6f45])), 1.0),
+                PKind::Puff => (&art.circle, bc(0xe9eef0), 0.2),
+                PKind::Soot => (&art.circle, bc(0x4a4f5a), 0.2),
+                PKind::Splat => (&art.circle, bc(0x5c4a78), 0.16),
                 PKind::Drop => (&art.drop, Color::WHITE, 1.0),
+                PKind::Dust => (&art.circle, bc(0xcaa874), 0.12),
+                PKind::Splash => (&art.circle, bc(0xd8f2f6), 0.14),
+                PKind::Gold => (&art.spark, bc(*rng.pick(&[pal::GOLD, 0xffe08a, 0xffffff, 0xff9a3c])), 1.2),
             };
             let p = wpos(slot, x, y);
             commands.spawn((
@@ -489,7 +626,13 @@ pub fn spawn_particles(mut commands: Commands, mut pending: ResMut<Pending>, art
     }
 }
 
-pub fn move_particles(mut commands: Commands, time: Res<Time>, session: Res<Session>, mut q: Query<(Entity, &mut Particle, &mut Transform, &mut Sprite)>) {
+pub fn move_particles(
+    mut commands: Commands,
+    time: Res<Time>,
+    session: Res<Session>,
+    mut q: Query<(Entity, &mut Particle, &mut Transform, &mut Sprite), Without<Popup>>,
+    mut pops: Query<(Entity, &mut Popup, &mut Transform, &mut TextColor), Without<Particle>>,
+) {
     let paused = session.game.as_ref().map(|g| g.paused).unwrap_or(false);
     let dt = if paused { 0.0 } else { time.delta_secs().min(0.05) };
     for (ent, mut p, mut tf, mut spr) in &mut q {
@@ -506,6 +649,13 @@ pub fn move_particles(mut commands: Commands, time: Res<Time>, session: Res<Sess
                 p.vy *= 0.98;
             }
             PKind::Drop => {}
+            PKind::Dust => {
+                p.vx *= 0.9;
+            }
+            PKind::Gold | PKind::Splash => {
+                p.vy += 160.0 * dt;
+                p.vx *= 0.98;
+            }
             _ => {
                 p.vy += 120.0 * dt;
                 p.vx *= 0.97;
@@ -514,15 +664,27 @@ pub fn move_particles(mut commands: Commands, time: Res<Time>, session: Res<Sess
         let k = p.life / p.max;
         let pos = wpos(p.slot, p.x, p.y);
         tf.translation = Vec3::new(pos.x, pos.y, 3.0);
-        let a = 1.0 - k;
         let base = spr.color;
-        spr.color = base.with_alpha(a);
+        spr.color = base.with_alpha(1.0 - k);
         match p.kind {
-            PKind::Puff | PKind::Soot => tf.scale = Vec3::splat(1.0 + k * 2.2),
+            PKind::Puff | PKind::Soot | PKind::Dust => tf.scale = Vec3::splat(1.0 + k * 2.2),
             PKind::Leaf | PKind::LeafDead => tf.rotation = Quat::from_rotation_z(-(p.rot + p.life * 5.0)),
-            PKind::Spark => tf.rotation = Quat::from_rotation_z(-p.life * 3.0),
+            PKind::Spark | PKind::Gold => tf.rotation = Quat::from_rotation_z(-p.life * 4.0),
             _ => {}
         }
+    }
+    for (ent, mut p, mut tf, mut color) in &mut pops {
+        p.life += time.delta_secs();
+        if p.life >= p.max {
+            commands.entity(ent).despawn();
+            continue;
+        }
+        let k = p.life / p.max;
+        let pop = if p.life < 0.25 { sim::ease_back(p.life / 0.25) } else { 1.0 };
+        tf.scale = Vec3::splat(p.base * pop.max(0.05));
+        tf.translation.y += p.vy * time.delta_secs() * (1.0 - k);
+        let c = color.0;
+        color.0 = c.with_alpha(if k > 0.7 { (1.0 - k) / 0.3 } else { 1.0 });
     }
 }
 
@@ -548,9 +710,9 @@ impl WPen<'_, '_, '_> {
 
 fn state_color(st: u8) -> Color {
     match st {
-        2 => bc(0x6cc26a),
-        1 => bc(0xf4c64e),
-        _ => bc(0xe96b5f),
+        2 => bc(pal::GREEN),
+        1 => bc(pal::AMBER),
+        _ => bc(pal::RED),
     }
 }
 
@@ -593,7 +755,7 @@ fn relation_lines(pen: &mut WPen, g: &mut Gizmos<WorldGizmos>, art: &Art, isl: &
         let to = Vec2::new(e.x, e.y - def(usp).head * 0.5);
         let mid = Vec2::new((from.x + to.x) / 2.0, from.y.min(to.y) - 16.0);
         let good = w > 0.0;
-        let col = if good { bca(0x6cc26a, 0.95) } else { bca(0xe96b5f, 0.95) };
+        let col = if good { bca(pal::GREEN, 0.95) } else { bca(pal::RED, 0.95) };
         let o = origin(slot);
         let flipy = |p: Vec2| Vec2::new(o.x + p.x, o.y - p.y);
         dashed_curve(g, flipy(from), flipy(mid), flipy(to), col, t * 4.0);
@@ -617,15 +779,13 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
             if e.dying > 0.0 {
                 continue;
             }
-            if e.sp == Sp::Bee {
-                let a = t * 1.4 + e.ph;
-                pen.tex(&art.shadow, *slot, e.x + a.cos() * 8.0, e.y, Vec2::new(0.35, 0.4), bca(0x3c3228, 0.13), zfor(e.y) - 0.0005, LAYER_WORLD);
+            if e.hop > 0.0 {
+                let k = (e.hop * PI).sin();
+                pen.tex(&art.shadow, *slot, e.x, e.y + 1.0, Vec2::new(0.6 - k * 0.2, 0.6 - k * 0.2), bca(0x10202a, 0.25), zfor(e.y) - 0.002, LAYER_WORLD);
             }
             if state_of(e.hd) == 0 && session.scene != Scene::Title {
-                let hy = e.y - def(e.sp).head - 10.0;
-                pen.tex(&art.cloud, *slot, e.x, hy, Vec2::splat(0.35), Color::WHITE.with_alpha(0.9), 2.9, LAYER_WORLD);
-                let dk = (t * 1.5 + e.ph) % 1.0;
-                pen.tex(&art.circle, *slot, e.x - 2.0, hy + 7.0 + dk * 8.0, Vec2::splat(0.1), bca(0x7fb8f0, 1.0 - dk), 2.9, LAYER_WORLD);
+                let hy = e.y - def(e.sp).head - 12.0 + (t * 3.0 + e.ph).sin() * 1.5;
+                pen.tex(&art.faces[0], *slot, e.x, hy, Vec2::splat(0.55), Color::WHITE.with_alpha(0.9), 2.9, LAYER_WORLD);
             }
         }
         for s in &isl.storms {
@@ -636,6 +796,21 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
             }
             if s.struck && s.st < 0.35 {
                 pen.tex(&art.bolt, *slot, s.x, s.y - 36.0, Vec2::splat(2.4), Color::WHITE.with_alpha(1.0 - s.st / 0.35), 4.5, LAYER_WORLD);
+            }
+        }
+        if let Some(w) = &isl.whale {
+            if w.active() && w.t > 0.4 {
+                // spout
+                for i in 0..6 {
+                    let k = ((t * 1.4 + i as f32 / 6.0) % 1.0).max(0.0);
+                    let x = w.x - 12.0 + (i as f32 - 2.5) * 3.0 * k;
+                    let y = w.y - 26.0 - k * 30.0;
+                    pen.tex(&art.circle, *slot, x, y, Vec2::splat(0.12 + k * 0.1), bca(0xe6f6fb, 0.8 * (1.0 - k)), 4.8, LAYER_WORLD);
+                }
+                if *slot == 0 {
+                    let pul = 1.0 + (t * 6.0).sin() * 0.08;
+                    pen.tex(&art.ring, *slot, w.x, w.y - 8.0, Vec2::new(1.5 * pul, 0.9 * pul), bca(pal::GOLD, 0.9), 4.9, LAYER_OVER);
+                }
             }
         }
         if isl.shield > 0.0 {
@@ -659,7 +834,7 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
         }
         let warn = (s.t / STORM_T).clamp(0.0, 1.0);
         let c = wpos(slot, s.cx + 38.0 * s.sc, s.cy - 22.0 * s.sc);
-        ring(&mut g, c, 7.0, 1.0 - warn, bc(0xe96b5f));
+        ring(&mut g, c, 7.0, 1.0 - warn, bc(pal::RED));
         for i in 0..s.need {
             let x = s.cx - (s.need as f32 - 1.0) * 5.0 + i as f32 * 10.0;
             let col = if i < s.taps { Color::WHITE } else { Color::WHITE.with_alpha(0.35) };
@@ -671,12 +846,12 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
         for i in (0..n).step_by(2) {
             let (a0, a1) = (i as f32 / n as f32 * TAU, (i as f32 + 1.0) / n as f32 * TAU);
             let p = |a: f32| o + Vec2::new(a.cos() * HS * 2.2, -a.sin() * HS * 2.2 * SQ);
-            g.line_2d(p(a0), p(a1), bca(0xe96b5f, 0.4 + (t * 10.0).sin() * 0.3));
+            g.line_2d(p(a0), p(a1), bca(pal::RED, 0.4 + (t * 10.0).sin() * 0.3));
         }
     }
     for b in &isl.beetles {
         if b.active() && b.eat > 0.0 {
-            ring(&mut g, wpos(slot, b.x, b.y - 20.0), 6.0, b.eat / 3.0, bc(0xe96b5f));
+            ring(&mut g, wpos(slot, b.x, b.y - 20.0), 6.0, b.eat / 3.0, bc(pal::RED));
         }
     }
 
@@ -687,23 +862,30 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
             let pul = 1.0 + (t * 4.0).sin() * 0.12;
             for (tile, _v, h) in gm.hints(sp) {
                 let tl = &isl.map.tiles[tile];
-                pen.tex(&art.hex, slot, tl.x, tl.y, Vec2::splat(0.92), Color::WHITE.with_alpha(0.22), 0.3, LAYER_OVER);
                 let st = state_of(h);
-                let r = if st == 2 { 5.0 * pul } else { 3.6 };
-                pen.tex(&art.circle, slot, tl.x, tl.y, Vec2::splat((r + 1.6) / 16.0), Color::WHITE, 0.31, LAYER_OVER);
-                pen.tex(&art.circle, slot, tl.x, tl.y, Vec2::splat(r / 16.0), state_color(st), 0.32, LAYER_OVER);
+                // good spots glow, poor spots stay quiet
+                let (r, ring_a, hex_a) = match st {
+                    2 => (5.0 * pul, 1.0, 0.22),
+                    1 => (3.4, 0.8, 0.12),
+                    _ => (2.2, 0.0, 0.05),
+                };
+                pen.tex(&art.hex, slot, tl.x, tl.y, Vec2::splat(0.92), Color::WHITE.with_alpha(hex_a), 0.3, LAYER_OVER);
+                if ring_a > 0.0 {
+                    pen.tex(&art.circle, slot, tl.x, tl.y, Vec2::splat((r + 1.6) / 16.0), Color::WHITE.with_alpha(ring_a), 0.31, LAYER_OVER);
+                }
+                pen.tex(&art.circle, slot, tl.x, tl.y, Vec2::splat(r / 16.0), state_color(st).with_alpha(if st == 0 { 0.5 } else { 1.0 }), 0.32, LAYER_OVER);
             }
             if let Some(tile) = hover {
                 let tl = &isl.map.tiles[tile];
                 if isl.can_place(tile, sp) {
                     let (_, h) = isl.place_value(tile, sp);
                     relation_lines(&mut pen, &mut g, &art, isl, slot, tile, sp, Vec2::new(tl.x, tl.y - def(sp).head * 0.5), t);
-                    pen.tex(art.sp(sp, 1), slot, tl.x, tl.y - if sp == Sp::Bee { 24.0 } else { 0.0 }, Vec2::ONE, Color::WHITE.with_alpha(0.75), 7.0, LAYER_OVER);
+                    pen.tex(art.sp(sp, 1), slot, tl.x, tl.y, Vec2::ONE, Color::WHITE.with_alpha(0.75), 7.0, LAYER_OVER);
                     pen.tex(&art.faces[state_of(h) as usize], slot, tl.x, tl.y - def(sp).head - 16.0, Vec2::splat(0.9), Color::WHITE, 9.0, LAYER_OVER);
                 } else {
                     let o = wpos(slot, tl.x, tl.y);
-                    g.line_2d(o + Vec2::new(-7.0, 5.0), o + Vec2::new(7.0, -5.0), bc(0xe96b5f));
-                    g.line_2d(o + Vec2::new(7.0, 5.0), o + Vec2::new(-7.0, -5.0), bc(0xe96b5f));
+                    g.line_2d(o + Vec2::new(-7.0, 5.0), o + Vec2::new(7.0, -5.0), bc(pal::RED));
+                    g.line_2d(o + Vec2::new(7.0, 5.0), o + Vec2::new(-7.0, -5.0), bc(pal::RED));
                 }
             }
         }
@@ -715,7 +897,7 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
                 for i in (0..n).step_by(2) {
                     let (a0, a1) = (i as f32 / n as f32 * TAU, (i as f32 + 1.0) / n as f32 * TAU);
                     let p = |a: f32| o + Vec2::new(a.cos() * HS * 2.2, -a.sin() * HS * 2.2 * SQ);
-                    g.line_2d(p(a0), p(a1), bc(0xe96b5f));
+                    g.line_2d(p(a0), p(a1), bc(pal::RED));
                 }
                 pen.tex(&art.cloud, slot, tl.x, tl.y - 70.0, Vec2::splat(1.2), Color::WHITE.with_alpha(0.7), 8.0, LAYER_OVER);
             }
@@ -727,7 +909,7 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
             if let Some(tile) = hover {
                 let tl = &isl.map.tiles[tile];
                 if tl.occ.is_some() {
-                    pen.tex(&art.hex_line, slot, tl.x, tl.y, Vec2::splat(0.95), bc(0xe96b5f), 0.35, LAYER_OVER);
+                    pen.tex(&art.hex_line, slot, tl.x, tl.y, Vec2::splat(0.95), bc(pal::RED), 0.35, LAYER_OVER);
                 }
             }
         }
@@ -740,7 +922,7 @@ pub fn draw_overlays(mut commands: Commands, session: Res<Session>, art: Res<Art
                         let st = state_of(e.h);
                         pen.tex(&art.faces[st as usize], slot, e.x, fy, Vec2::splat(0.9), Color::WHITE, 9.0, LAYER_OVER);
                         if st == 0 && e.sad_t > 0.0 {
-                            ring(&mut g, wpos(slot, e.x, fy), 12.0, 1.0 - e.sad_t / WITHER_T, bc(0xe96b5f));
+                            ring(&mut g, wpos(slot, e.x, fy), 12.0, 1.0 - e.sad_t / WITHER_T, bc(pal::RED));
                         }
                     }
                 }

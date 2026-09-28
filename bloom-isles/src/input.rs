@@ -205,14 +205,14 @@ fn on_down(p: Vec2, l: &Layout, view: &MainView, ptr: &mut Pointer, session: &mu
                 exit.write(AppExit::Success);
             }
             BtnId::Again => {
-                if session.game.as_ref().map(|g| g.end_t > 1.2).unwrap_or(false) {
+                if session.game.as_ref().map(|g| g.end_t > crate::sim::END_BUTTONS_AT).unwrap_or(false) {
                     session.reroll_title();
                     session.start_game(settings.diff);
                     sfx(pending, Sfx::Place);
                 }
             }
             BtnId::EndHome => {
-                if session.game.as_ref().map(|g| g.end_t > 1.2).unwrap_or(false) {
+                if session.game.as_ref().map(|g| g.end_t > crate::sim::END_BUTTONS_AT).unwrap_or(false) {
                     session.to_title();
                     sfx(pending, Sfx::Click);
                 }
@@ -373,8 +373,14 @@ fn portrait_tap(g: &mut crate::sim::Game, pi: usize, pending: &mut Pending) {
 fn island_tap(g: &mut crate::sim::Game, view: &MainView, p: Vec2, pending: &mut Pending) {
     let lp = view.to_local(p);
     let vi = g.view;
-    // defend your own island first: storms, then beetles
+    // defend your own island first: the whale, storms, then beetles
     if vi == 0 {
+        if let Some(w) = g.isl[0].whale.as_ref() {
+            if w.active() && (lp.x - w.x).hypot((lp.y - w.y + 8.0) * 1.3) < 48.0 && g.tap_whale() {
+                pending.ev.extend(g.ev.drain(..));
+                return;
+            }
+        }
         if let Some(id) = g.isl[0].storms.iter().find(|s| s.active() && storm_hit(s, lp.x, lp.y)).map(|s| s.id) {
             g.tap_storm(0, id, true);
             pending.ev.extend(g.ev.drain(..));
@@ -466,7 +472,7 @@ pub fn keyboard_system(
             }
         }
         Scene::End => {
-            if keys.just_pressed(KeyCode::Escape) && session.game.as_ref().map(|g| g.end_t > 1.2).unwrap_or(false) {
+            if keys.just_pressed(KeyCode::Escape) && session.game.as_ref().map(|g| g.end_t > crate::sim::END_BUTTONS_AT).unwrap_or(false) {
                 session.to_title();
             }
         }

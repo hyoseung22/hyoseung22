@@ -7,7 +7,7 @@ use crate::rng::Rng;
 pub const THRIVE: f32 = 0.72;
 pub const SAD: f32 = 0.32;
 pub const DUR: f32 = 300.0;
-pub const GOAL: f32 = 250.0;
+pub const GOAL: f32 = 300.0;
 pub const CARD_CD: f32 = 3.6;
 pub const STORM_T: f32 = 7.0;
 pub const SHIELD_T: f32 = 25.0;
@@ -81,6 +81,9 @@ pub enum PKind {
     Soot,
     Splat,
     Drop,
+    Dust,
+    Splash,
+    Gold,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -106,6 +109,22 @@ pub enum Sfx {
     Click,
     Win,
     Lose,
+    Tock,
+    Wow,
+    CrowdWow,
+    Cheer,
+    BigCheer,
+    Applause,
+    Aww,
+    Drumroll,
+    Cymbal,
+    Thud,
+    Firework,
+    Combo(u8),
+    Jackpot,
+    Splash,
+    Whale,
+    Coin,
 }
 
 /// Things the renderer should react to.
@@ -116,6 +135,18 @@ pub enum Ev {
     Sfx(Sfx),
     Shake,
     Flash,
+    /// New land rose from the sea on island `isl`.
+    Grow { isl: usize, tiles: Vec<usize> },
+    /// Floating "+N" above something that just started thriving.
+    Score { isl: usize, x: f32, y: f32, amt: i32 },
+    /// Player placement streak.
+    Combo { n: u32, x: f32, y: f32 },
+    /// A mega bloom or whale treasure.
+    Jackpot { isl: usize, x: f32, y: f32 },
+    /// Every creature on the island jumps for joy.
+    Party { isl: usize },
+    /// Player moved up (true) or down in the race.
+    Rank { up: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +168,33 @@ pub struct Creature {
     pub how: Death,
     pub v: u8,
     pub ph: f32,
+    /// Hop progress 0..1 while moving between tiles like a board-game piece (0 = standing).
+    pub hop: f32,
+    pub fx: f32,
+    pub fy: f32,
+    pub tx: f32,
+    pub ty: f32,
+    pub move_cd: f32,
+    /// Celebration jump timer.
+    pub jump: f32,
+    pub thriving: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Whale {
+    pub x: f32,
+    pub y: f32,
+    pub t: f32,
+    pub dur: f32,
+    pub caught: bool,
+    pub gone: f32,
+    pub bot: Option<f32>,
+}
+
+impl Whale {
+    pub fn active(&self) -> bool {
+        !self.caught && self.t < self.dur
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -205,11 +263,21 @@ pub struct Island {
     pub hit_by: usize,
     pub recalc_t: f32,
     pub next_id: u32,
+    /// Bumped whenever tiles are added.
+    pub map_ver: u32,
+    pub grow_level: u8,
+    pub milestone: u32,
+    pub whale: Option<Whale>,
+    pub whale_t: f32,
 }
+
+/// Scores at which an island raises new land.
+pub const GROW_AT: [f32; 3] = [65.0, 135.0, 210.0];
+pub const PARTY_EVERY: f32 = 60.0;
 
 impl Island {
     pub fn new(map: IslandMap) -> Self {
-        Island { map, ents: vec![], storms: vec![], beetles: vec![], score: 0.0, ds: 0.0, lush: 0.0, kinds: 0, ver: 1, shield: 0.0, hit_t: 0.0, hit_by: 0, recalc_t: 0.0, next_id: 1 }
+        Island { map, ents: vec![], storms: vec![], beetles: vec![], score: 0.0, ds: 0.0, lush: 0.0, kinds: 0, ver: 1, shield: 0.0, hit_t: 0.0, hit_by: 0, recalc_t: 0.0, next_id: 1, map_ver: 1, grow_level: 0, milestone: 0, whale: None, whale_t: 30.0 }
     }
 
     pub fn threatened(&self) -> bool {
@@ -308,6 +376,14 @@ impl Island {
             how: Death::Dig,
             v: rng.below(4) as u8,
             ph: rng.f() * std::f32::consts::TAU,
+            hop: 0.0,
+            fx: 0.0,
+            fy: 0.0,
+            tx: 0.0,
+            ty: 0.0,
+            move_cd: 2.5 + rng.f() * 4.0,
+            jump: 0.0,
+            thriving: false,
         };
         let (x, y) = (e.x, e.y);
         self.map.tiles[tile].occ = Some((id, sp));
@@ -457,6 +533,14 @@ impl Island {
             } else {
                 e.sad_t = (e.sad_t - dt * 2.0).max(0.0);
             }
+            if st == 2 && !e.thriving {
+                e.thriving = true;
+                if viewed && e.born > 0.6 {
+                    ev.push(Ev::Score { isl, x: e.x, y: e.y - def(e.sp).head - 8.0, amt: 3 });
+                }
+            } else if st < 2 {
+                e.thriving = false;
+            }
             if st == 2 {
                 e.thr_t += dt;
                 let (x, y, head, plant) = (e.x, e.y, def(e.sp).head, def(e.sp).plant);
@@ -474,6 +558,9 @@ impl Island {
             i += 1;
         }
         self.ents.retain(|e| e.dying < 0.8);
+        self.move_animals(isl, dt, viewed, rng, ev);
+        self.check_growth(isl, viewed, rng, ev);
+        self.update_whale(isl, dt, rng, ev);
 
         // storms
         for si in 0..self.storms.len() {
@@ -598,6 +685,193 @@ impl Island {
     }
 }
 
+pub const HOP_T: f32 = 0.5;
+
+impl Island {
+    /// Animals hop to a neighbouring tile when it suits them better, like pieces on a board.
+    fn move_animals(&mut self, isl: usize, dt: f32, viewed: bool, rng: &mut Rng, ev: &mut Vec<Ev>) {
+        for i in 0..self.ents.len() {
+            let e = &mut self.ents[i];
+            if e.dying > 0.0 {
+                continue;
+            }
+            e.jump = (e.jump - dt * 1.6).max(0.0);
+            if e.hop > 0.0 {
+                e.hop += dt / HOP_T;
+                if e.hop >= 1.0 {
+                    e.hop = 0.0;
+                    e.x = e.tx;
+                    e.y = e.ty;
+                    ev.push(Ev::Burst { isl, x: e.x, y: e.y, kind: PKind::Dust, n: 5 });
+                    if viewed {
+                        ev.push(Ev::Sfx(Sfx::Tock));
+                    }
+                } else {
+                    let k = ease_io(e.hop);
+                    e.x = lerp(e.fx, e.tx, k);
+                    e.y = lerp(e.fy, e.ty, k);
+                }
+                continue;
+            }
+            if def(e.sp).plant || e.born < 1.0 {
+                continue;
+            }
+            e.move_cd -= dt;
+            if e.move_cd > 0.0 {
+                continue;
+            }
+            e.move_cd = 3.0 + rng.f() * 5.0;
+            let (sp, from, id) = (e.sp, e.tile, e.id);
+            self.map.tiles[from].occ = None;
+            let cur = self.happ(from, sp, None);
+            let mut best = None;
+            let mut bh = f32::MIN;
+            for u in self.map.tiles[from].n1.clone() {
+                if !self.can_place(u, sp) {
+                    continue;
+                }
+                let h = self.happ(u, sp, None) + rng.f() * 0.03;
+                if h > bh {
+                    bh = h;
+                    best = Some(u);
+                }
+            }
+            let wander = if state_of(cur) < 2 { 0.3 } else { 0.12 };
+            let target = match best {
+                Some(u) if bh > cur + 0.04 => Some(u),
+                Some(u) if bh >= cur - 0.01 && rng.f() < wander => Some(u),
+                _ => None,
+            };
+            let dest = target.unwrap_or(from);
+            self.map.tiles[dest].occ = Some((id, sp));
+            if let Some(u) = target {
+                let t = &self.map.tiles[u];
+                let (tx, ty) = (t.x + (rng.f() - 0.5) * 5.0, t.y + (rng.f() - 0.5) * 3.0);
+                let e = &mut self.ents[i];
+                e.tile = u;
+                e.fx = e.x;
+                e.fy = e.y;
+                e.tx = tx;
+                e.ty = ty;
+                e.hop = 0.001;
+                self.ver += 1;
+            }
+        }
+    }
+
+    /// Raise land at score milestones and throw a party every so often.
+    fn check_growth(&mut self, isl: usize, viewed: bool, rng: &mut Rng, ev: &mut Vec<Ev>) {
+        while (self.grow_level as usize) < GROW_AT.len() && self.score >= GROW_AT[self.grow_level as usize] {
+            self.grow_level += 1;
+            let tiles = self.map.grow(7, rng);
+            if tiles.is_empty() {
+                continue;
+            }
+            self.map_ver += 1;
+            self.ver += 1;
+            for &t in &tiles {
+                let tl = &self.map.tiles[t];
+                ev.push(Ev::Burst { isl, x: tl.x, y: tl.y, kind: PKind::Splash, n: 8 });
+            }
+            ev.push(Ev::Grow { isl, tiles });
+            if isl == 0 {
+                ev.push(Ev::Sfx(Sfx::CrowdWow));
+                ev.push(Ev::Sfx(Sfx::Splash));
+            } else if viewed {
+                ev.push(Ev::Sfx(Sfx::Wow));
+            }
+        }
+        let m = (self.score / PARTY_EVERY) as u32;
+        if m > self.milestone {
+            self.milestone = m;
+            for e in &mut self.ents {
+                if e.dying == 0.0 {
+                    e.jump = 1.0;
+                }
+            }
+            ev.push(Ev::Party { isl });
+            if isl == 0 {
+                ev.push(Ev::Sfx(Sfx::Cheer));
+            }
+        }
+    }
+
+    /// Now and then a golden whale surfaces by the coast. Tap it for treasure.
+    fn update_whale(&mut self, isl: usize, dt: f32, rng: &mut Rng, ev: &mut Vec<Ev>) {
+        if let Some(w) = &mut self.whale {
+            w.t += dt;
+            if !w.active() {
+                w.gone += dt;
+                if w.gone > 1.5 {
+                    self.whale = None;
+                }
+            }
+            return;
+        }
+        self.whale_t -= dt;
+        if self.whale_t > 0.0 || self.map.edge.is_empty() {
+            return;
+        }
+        self.whale_t = 40.0 + rng.f() * 30.0;
+        let t = &self.map.tiles[*rng.pick(&self.map.edge)];
+        let (cx, cy) = (self.map.b.cx(), self.map.b.cy());
+        let d = Vec2f::new(t.x - cx, (t.y - cy) / SQ).norm();
+        self.whale = Some(Whale { x: t.x + d.0 * 80.0, y: t.y + d.1 * 80.0 * SQ, t: 0.0, dur: 8.0, caught: false, gone: 0.0, bot: None });
+        if isl == 0 {
+            ev.push(Ev::Sfx(Sfx::Whale));
+        }
+    }
+
+    pub fn catch_whale(&mut self, isl: usize, rng: &mut Rng, ev: &mut Vec<Ev>) -> bool {
+        let Some(w) = &mut self.whale else { return false };
+        if !w.active() {
+            return false;
+        }
+        w.caught = true;
+        let (wx, wy) = (w.x, w.y);
+        ev.push(Ev::Jackpot { isl, x: wx, y: wy });
+        ev.push(Ev::Burst { isl, x: wx, y: wy - 20.0, kind: PKind::Gold, n: 24 });
+        for _ in 0..3 {
+            let options: Vec<Sp> = ALL.iter().copied().filter(|&sp| self.has_spot(sp)).collect();
+            if options.is_empty() {
+                break;
+            }
+            let sp = *rng.pick(&options);
+            let mut best = None;
+            let mut bv = f32::MIN;
+            for t in 0..self.map.tiles.len() {
+                if self.can_place(t, sp) {
+                    let v = self.place_value(t, sp).0 + rng.f();
+                    if v > bv {
+                        bv = v;
+                        best = Some(t);
+                    }
+                }
+            }
+            if let Some(t) = best {
+                self.add_ent(isl, t, sp, true, rng, ev);
+            }
+        }
+        true
+    }
+}
+
+struct Vec2f(f32, f32);
+impl Vec2f {
+    fn new(x: f32, y: f32) -> Self {
+        Vec2f(x, y)
+    }
+    fn norm(self) -> (f32, f32) {
+        let l = self.0.hypot(self.1).max(0.001);
+        (self.0 / l, self.1 / l)
+    }
+}
+
+/// When each rank is revealed on the results screen (index = rank).
+pub const REVEAL_AT: [f32; 4] = [4.6, 3.5, 2.7, 1.9];
+/// Results-screen buttons appear after this.
+pub const END_BUTTONS_AT: f32 = 6.0;
+
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -668,6 +942,11 @@ pub struct Game {
     pub ranks: Vec<usize>,
     pub rng: Rng,
     pub ev: Vec<Ev>,
+    pub combo: u32,
+    pub last_place: f32,
+    pub rank: usize,
+    rank_cd: f32,
+    cer: u8,
 }
 
 impl Game {
@@ -703,7 +982,15 @@ impl Game {
             ranks: vec![],
             rng,
             ev: vec![],
+            combo: 0,
+            last_place: -10.0,
+            rank: 0,
+            rank_cd: 1.0,
+            cer: 0,
         };
+        for i in 0..PLAYERS {
+            g.isl[i].whale_t = 25.0 + g.rng.f() * 25.0;
+        }
         for p in 0..PLAYERS {
             for _ in 0..4 {
                 let c = g.draw_card(p, true);
@@ -769,14 +1056,60 @@ impl Game {
         if !self.isl[p].can_place(tile, sp) {
             return false;
         }
+        let (value, _) = self.isl[p].place_value(tile, sp);
         let Game { isl, rng, ev, .. } = self;
         isl[p].add_ent(p, tile, sp, false, rng, ev);
         self.use_slot(p, si);
-        if !self.players[p].bot {
+        let bot = self.players[p].bot;
+        if !bot {
             self.placed += 1;
             self.sfx(Sfx::Place);
         } else if self.view == p {
             self.sfx(Sfx::PlaceSoft);
+        }
+        // mega bloom: a lucky plant sprouts copies all around it
+        if def(sp).plant && self.rng.f() < 0.07 {
+            let Game { isl, rng, ev, .. } = self;
+            let mut n = 0;
+            for u in isl[p].map.tiles[tile].n1.clone() {
+                if n < 3 && isl[p].can_place(u, sp) {
+                    isl[p].add_ent(p, u, sp, true, rng, ev);
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                let t = &self.isl[p].map.tiles[tile];
+                let (x, y) = (t.x, t.y);
+                self.ev.push(Ev::Jackpot { isl: p, x, y });
+                self.ev.push(Ev::Burst { isl: p, x, y: y - 10.0, kind: PKind::Gold, n: 18 });
+                if !bot || self.view == p {
+                    self.sfx(Sfx::Jackpot);
+                }
+            }
+        }
+        if !bot {
+            if value >= 2.0 {
+                self.combo = if self.t - self.last_place < 6.0 { self.combo + 1 } else { 1 };
+                self.last_place = self.t;
+            } else {
+                self.combo = 0;
+            }
+            if self.combo >= 2 {
+                let t = &self.isl[0].map.tiles[tile];
+                let (x, y) = (t.x, t.y - 40.0);
+                self.ev.push(Ev::Combo { n: self.combo, x, y });
+                self.sfx(Sfx::Combo(self.combo.min(8) as u8));
+                if self.combo >= 3 {
+                    for s in &mut self.players[0].hand {
+                        if s.card.is_none() {
+                            s.cd *= 0.4;
+                        }
+                    }
+                }
+                if self.combo == 5 || self.combo == 8 {
+                    self.sfx(Sfx::CrowdWow);
+                }
+            }
         }
         true
     }
@@ -935,6 +1268,17 @@ impl Game {
         true
     }
 
+    pub fn tap_whale(&mut self) -> bool {
+        let Game { isl, rng, ev, .. } = self;
+        if isl[0].catch_whale(0, rng, ev) {
+            self.sfx(Sfx::Coin);
+            self.sfx(Sfx::Jackpot);
+            true
+        } else {
+            false
+        }
+    }
+
     fn bot_think(&mut self, p: usize) {
         let d = &DIFFS[self.diff];
         let threatened = self.isl[p].threatened();
@@ -1017,6 +1361,17 @@ impl Game {
                 taps.push((false, s.id));
             }
         }
+        if let Some(w) = self.isl[p].whale.as_mut() {
+            if w.active() {
+                let rng = &mut self.rng;
+                let b = w.bot.get_or_insert_with(|| if rng.f() < miss { 1e9 } else { react * (1.0 + rng.f() * 2.0) });
+                *b -= dt;
+                if *b <= 0.0 {
+                    let Game { isl, rng, ev, .. } = self;
+                    isl[p].catch_whale(p, rng, ev);
+                }
+            }
+        }
         for (storm, id) in taps {
             if storm {
                 self.tap_storm(p, id, false);
@@ -1029,6 +1384,7 @@ impl Game {
     pub fn update(&mut self, dt: f32) {
         if self.over {
             self.end_t += dt;
+            self.ceremony();
             let Game { isl, rng, ev, .. } = self;
             for (i, s) in isl.iter_mut().enumerate() {
                 s.update(i, dt * 0.5, false, rng, ev);
@@ -1089,6 +1445,18 @@ impl Game {
                 self.sel = None;
             }
         }
+        self.rank_cd -= dt;
+        if self.rank_cd <= 0.0 {
+            self.rank_cd = 1.0;
+            let me = self.isl[0].score;
+            let r = (1..PLAYERS).filter(|&i| self.isl[i].score > me + 1.0).count();
+            if self.t > 20.0 && r != self.rank {
+                let up = r < self.rank;
+                self.ev.push(Ev::Rank { up });
+                self.sfx(if up { Sfx::Cheer } else { Sfx::Aww });
+            }
+            self.rank = r;
+        }
         if self.t >= DUR || self.isl.iter().any(|i| i.score >= GOAL) {
             self.end();
         }
@@ -1103,9 +1471,33 @@ impl Game {
         }
         let mut ranks: Vec<usize> = (0..PLAYERS).collect();
         ranks.sort_by(|a, b| self.isl[*b].score.partial_cmp(&self.isl[*a].score).unwrap_or(std::cmp::Ordering::Equal));
-        let win = ranks[0] == 0;
         self.ranks = ranks;
-        self.sfx(if win { Sfx::Win } else { Sfx::Lose });
+        self.cer = 0;
+    }
+
+    /// Results show: drumroll, then reveal from last place to first with crowd reactions.
+    fn ceremony(&mut self) {
+        const AT: [f32; 6] = [0.2, 1.9, 2.7, 3.5, 4.6, 5.4];
+        while (self.cer as usize) < AT.len() && self.end_t >= AT[self.cer as usize] {
+            match self.cer {
+                0 => self.sfx(Sfx::Drumroll),
+                1 => {
+                    self.sfx(Sfx::Thud);
+                    self.sfx(Sfx::Aww);
+                }
+                2 | 3 => {
+                    self.sfx(Sfx::Thud);
+                    self.sfx(Sfx::Applause);
+                }
+                4 => {
+                    self.sfx(Sfx::Cymbal);
+                    self.sfx(Sfx::BigCheer);
+                    self.sfx(Sfx::Firework);
+                }
+                _ => self.sfx(if self.ranks.first() == Some(&0) { Sfx::Win } else { Sfx::Lose }),
+            }
+            self.cer += 1;
+        }
     }
 
     pub fn selected(&self) -> Option<Card> {
@@ -1153,11 +1545,58 @@ mod tests {
 
     #[test]
     fn games_finish_in_a_sensible_time() {
-        for seed in 1..6 {
+        for seed in 1..9 {
             let (t, scores) = run(1, seed * 977);
             assert!(t > 150.0, "game ended too fast: {t} {scores:?}");
             assert!(scores.iter().any(|s| *s > 60.0), "nobody grew anything: {scores:?}");
             println!("seed {seed}: t={t:.0} scores={scores:?}");
+        }
+    }
+
+    #[test]
+    fn animals_hop_and_islands_grow() {
+        let mut rng = Rng::new(4242);
+        let map = crate::island::generate(rng.next_u32());
+        let mut g = Game::new(map, 1, rng);
+        g.players[0].bot = true;
+        let mut first_tile: std::collections::HashMap<(usize, u32), usize> = Default::default();
+        let mut moved = 0;
+        let mut grew = 0;
+        let mut whales = 0;
+        for _ in 0..(20 * 200) {
+            g.update(0.05);
+            for e in g.ev.drain(..) {
+                match e {
+                    Ev::Grow { .. } => grew += 1,
+                    Ev::Jackpot { .. } => whales += 1,
+                    _ => {}
+                }
+            }
+            for (i, isl) in g.isl.iter().enumerate() {
+                for c in &isl.ents {
+                    let t0 = *first_tile.entry((i, c.id)).or_insert(c.tile);
+                    if t0 != c.tile {
+                        moved += 1;
+                        first_tile.insert((i, c.id), c.tile);
+                    }
+                }
+            }
+            if g.over {
+                break;
+            }
+        }
+        println!("hops={moved} growths={grew} jackpots={whales}");
+        assert!(moved > 20, "animals should move around, saw {moved}");
+        assert!(grew >= 2, "islands should grow, saw {grew}");
+        // every occupied tile points back at a living creature on that tile
+        for isl in &g.isl {
+            for (ti, t) in isl.map.tiles.iter().enumerate() {
+                if let Some((id, sp)) = t.occ {
+                    let c = isl.ent(id).expect("occupant exists");
+                    assert_eq!(c.tile, ti);
+                    assert_eq!(c.sp, sp);
+                }
+            }
         }
     }
 

@@ -42,9 +42,8 @@ fn run(
     mut exit: EventWriter<AppExit>,
 ) {
     shots.t += time.delta_secs();
-    let steps: [f32; 11] = [2.5, 3.0, 5.0, 5.5, 7.5, 8.0, 12.0, 12.5, 15.0, 15.5, 18.5];
+    let steps: [f32; 14] = [2.5, 3.0, 5.0, 5.5, 8.5, 9.0, 13.0, 13.5, 16.0, 16.5, 17.5, 19.5, 20.0, 23.5];
     if shots.step >= steps.len() {
-        // give the last screenshot a second to be written, then quit
         if shots.t > steps[steps.len() - 1] + 1.5 {
             exit.write(AppExit::Success);
         }
@@ -59,10 +58,10 @@ fn run(
         1 => session.start_game(1),
         2 => shot(&mut commands, &dir, "2-start"),
         3 => {
-            // fast-forward: let a bot play for the player for a minute, then hold a bee card
+            // fast-forward: a bot plays for the player for a while
             let g = session.game.as_mut().unwrap();
             g.players[0].bot = true;
-            for _ in 0..1200 {
+            for _ in 0..1500 {
                 g.update(0.05);
             }
             g.ev.clear();
@@ -74,11 +73,20 @@ fn run(
             g.isl[0].storms.clear();
             g.isl[0].beetles.clear();
             g.isl[0].shield = 0.0;
+            g.isl[0].whale = None;
+            g.isl[0].whale_t = 0.0;
             let hints = g.hints(crate::eco::Sp::Bee);
             if let Some(best) = hints.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()) {
                 let t = &g.isl[0].map.tiles[best.0];
                 ptr.pos = view.to_screen(t.x, t.y);
+                let (x, y) = (t.x, t.y);
+                g.ev.push(crate::sim::Ev::Combo { n: 4, x, y: y - 40.0 });
             }
+            let b = g.isl[0].map.b;
+            g.ev.push(crate::sim::Ev::Grow { isl: 0, tiles: vec![] });
+            g.ev.push(crate::sim::Ev::Score { isl: 0, x: b.cx() - 60.0, y: b.cy(), amt: 3 });
+            g.combo = 4;
+            g.last_place = g.t;
         }
         4 => shot(&mut commands, &dir, "3-preview"),
         5 => {
@@ -100,8 +108,15 @@ fn run(
             g.isl[0].score = crate::sim::GOAL + 1.0;
         }
         10 => {
-            shot(&mut commands, &dir, "6-end");
+            let g = session.game.as_mut().unwrap();
+            g.end_t = 2.0;
         }
+        11 => shot(&mut commands, &dir, "6-end-reveal"),
+        12 => {
+            let g = session.game.as_mut().unwrap();
+            g.end_t = 5.0;
+        }
+        13 => shot(&mut commands, &dir, "7-end-final"),
         _ => {}
     }
     shots.step += 1;

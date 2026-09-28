@@ -124,6 +124,109 @@ impl IslandMap {
     }
 }
 
+pub fn make_deco(t: Terr, rng: &mut Rng) -> Vec<Deco> {
+    let count = match t {
+        Terr::Grass => 3,
+        Terr::Mead => 5,
+        Terr::Sand => 2,
+        _ => 0,
+    };
+    (0..count)
+        .map(|k| {
+            let a = rng.f() * std::f32::consts::TAU;
+            let rr = rng.f().sqrt() * HS * 0.72;
+            let kind = match t {
+                Terr::Sand => {
+                    if rng.f() < 0.3 {
+                        DecoKind::Shell
+                    } else {
+                        DecoKind::Pebble
+                    }
+                }
+                Terr::Mead if k > 1 => DecoKind::Dot,
+                _ => DecoKind::Tuft,
+            };
+            let col = *rng.pick(&[0xf4efe0u32, 0xf2c14e, 0xe56b6f]);
+            let s = 0.7 + rng.f() * 0.6;
+            Deco { x: a.cos() * rr, y: a.sin() * rr * SQ, kind, col, s }
+        })
+        .collect()
+}
+
+impl IslandMap {
+    /// Recompute neighbour lists, the coastline and the bounds.
+    pub fn link(&mut self) {
+        let n = self.tiles.len();
+        for i in 0..n {
+            let (q, r) = (self.tiles[i].q, self.tiles[i].r);
+            let mut n1 = vec![];
+            let mut n2 = vec![];
+            for j in 0..n {
+                let d = hdist((q, r), (self.tiles[j].q, self.tiles[j].r));
+                if d == 1 {
+                    n1.push(j);
+                }
+                if (1..=2).contains(&d) {
+                    n2.push(j);
+                }
+            }
+            self.tiles[i].n1 = n1;
+            self.tiles[i].n2 = n2;
+        }
+        self.edge = (0..n).filter(|&i| DIRS.iter().any(|&(dq, dr)| !self.has(self.tiles[i].q + dq, self.tiles[i].r + dr))).collect();
+        let mut b = Bounds { x0: f32::MAX, x1: f32::MIN, y0: f32::MAX, y1: f32::MIN };
+        for t in &self.tiles {
+            b.x0 = b.x0.min(t.x - HS);
+            b.x1 = b.x1.max(t.x + HS);
+            b.y0 = b.y0.min(t.y - HS);
+            b.y1 = b.y1.max(t.y + HS);
+        }
+        self.b = b;
+    }
+
+    /// Raise `count` new beach tiles from the sea around the coast. Old tile indices stay valid.
+    /// Beaches that end up inland turn to grass unless a beach-only creature lives there.
+    pub fn grow(&mut self, count: usize, rng: &mut Rng) -> Vec<usize> {
+        let mut added = vec![];
+        for _ in 0..count {
+            let mut best: Option<((i32, i32), f32)> = None;
+            for t in &self.tiles {
+                for (dq, dr) in DIRS {
+                    let p = (t.q + dq, t.r + dr);
+                    if self.has(p.0, p.1) || hdist(p, (0, 0)) > 9 {
+                        continue;
+                    }
+                    let adj = DIRS.iter().filter(|&&(a, b)| self.has(p.0 + a, p.1 + b)).count() as f32;
+                    let score = adj + rng.f() * 1.6;
+                    if best.map(|b| score > b.1).unwrap_or(true) {
+                        best = Some((p, score));
+                    }
+                }
+            }
+            let Some(((q, r), _)) = best else { break };
+            let tile = Tile { q, r, x: hx(q, r), y: hy(r), t: Terr::Sand, shade: rng.f(), deco: make_deco(Terr::Sand, rng), n1: vec![], n2: vec![], occ: None };
+            self.index.insert((q, r), self.tiles.len());
+            added.push(self.tiles.len());
+            self.tiles.push(tile);
+        }
+        for i in 0..self.tiles.len() {
+            let t = &self.tiles[i];
+            if t.t != Terr::Sand {
+                continue;
+            }
+            let inland = DIRS.iter().all(|&(dq, dr)| self.has(t.q + dq, t.r + dr));
+            let beach_only = matches!(t.occ, Some((_, crate::eco::Sp::Palm | crate::eco::Sp::Crab)));
+            if inland && !beach_only {
+                let nt = if rng.f() < 0.35 { Terr::Mead } else { Terr::Grass };
+                self.tiles[i].t = nt;
+                self.tiles[i].deco = make_deco(nt, rng);
+            }
+        }
+        self.link();
+        added
+    }
+}
+
 pub fn generate(seed: u32) -> IslandMap {
     for attempt in 0..30u32 {
         if let Some(m) = try_gen(seed.wrapping_add(attempt.wrapping_mul(7919)), false) {
@@ -262,50 +365,12 @@ fn try_gen(seed: u32, force: bool) -> Option<IslandMap> {
         return None;
     }
 
-    let n = tiles.len();
-    for i in 0..n {
-        for j in 0..n {
-            let d = hdist((tiles[i].q, tiles[i].r), (tiles[j].q, tiles[j].r));
-            if d == 1 {
-                tiles[i].n1.push(j);
-            }
-            if (1..=2).contains(&d) {
-                tiles[i].n2.push(j);
-            }
-        }
-        let count = match tiles[i].t {
-            Terr::Grass => 3,
-            Terr::Mead => 5,
-            Terr::Sand => 2,
-            _ => 0,
-        };
-        for k in 0..count {
-            let a = rng.f() * std::f32::consts::TAU;
-            let rr = rng.f().sqrt() * HS * 0.72;
-            let kind = match tiles[i].t {
-                Terr::Sand => {
-                    if rng.f() < 0.3 {
-                        DecoKind::Shell
-                    } else {
-                        DecoKind::Pebble
-                    }
-                }
-                Terr::Mead if k > 1 => DecoKind::Dot,
-                _ => DecoKind::Tuft,
-            };
-            let col = *rng.pick(&[0xffffffu32, 0xffe27a, 0xffb3c7]);
-            let s = 0.7 + rng.f() * 0.6;
-            tiles[i].deco.push(Deco { x: a.cos() * rr, y: a.sin() * rr * SQ, kind, col, s });
-        }
+    for t in &mut tiles {
+        t.deco = make_deco(t.t, &mut rng);
     }
-    let mut b = Bounds { x0: f32::MAX, x1: f32::MIN, y0: f32::MAX, y1: f32::MIN };
-    for t in &tiles {
-        b.x0 = b.x0.min(t.x - HS);
-        b.x1 = b.x1.max(t.x + HS);
-        b.y0 = b.y0.min(t.y - HS);
-        b.y1 = b.y1.max(t.y + HS);
-    }
-    Some(IslandMap { seed, tiles, index, edge, b })
+    let mut m = IslandMap { seed, tiles, index, edge, b: Bounds { x0: 0.0, x1: 0.0, y0: 0.0, y1: 0.0 } };
+    m.link();
+    Some(m)
 }
 
 #[cfg(test)]
